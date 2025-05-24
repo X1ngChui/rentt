@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "rentt",
+    "rentt_macros",
+]

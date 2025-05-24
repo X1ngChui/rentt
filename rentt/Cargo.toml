@@ -1,0 +1,12 @@
+[package]
+name = "rentt"
+version = "0.1.0"
+edition = "2024"
+
+authors = ["X1ngChui <xngchui@gmail.com>"]
+description = "rentt is a simple, lightweight, efficient, and flexible ECS (Entity-Component-System) framework."
+license = "MIT"
+repository = "https://github.com/X1ngChui/rentt"
+
+[dependencies]
+rentt_macros = { path = "../rentt_macros" }
