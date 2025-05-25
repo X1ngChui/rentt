@@ -1,1 +1,1 @@
-pub(crate) mod hive;
+pub(crate) mod sparse_set;

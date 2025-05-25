@@ -25,6 +25,7 @@ name = "rentt"
 version = "0.1.0"
 dependencies = [
  "rentt_macros",
+ "smallnum",
 ]
 
 [[package]]
@@ -35,6 +36,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "smallnum"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb49cee96b087232a59514b3a60fc9e2c79140ee3eeb5bbc2398a7ae38defc9"
 
 [[package]]
 name = "syn"

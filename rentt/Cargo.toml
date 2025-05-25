@@ -10,3 +10,4 @@ repository = "https://github.com/X1ngChui/rentt"
 
 [dependencies]
 rentt_macros = { path = "../rentt_macros" }
+smallnum = "0.4"
