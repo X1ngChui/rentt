@@ -1,2 +1,1 @@
-mod utils;
-mod entity;
+pub mod entity;

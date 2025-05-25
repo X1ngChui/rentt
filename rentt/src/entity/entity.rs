@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use std::num::{NonZeroU16, NonZeroU32};
 
-pub trait Entt: Copy + Clone + PartialEq + Eq {
+pub(crate) trait Entt: Copy + Clone + PartialEq + Eq {
     unsafe fn new(ver: usize, idx: usize) -> Self;
     fn ver(&self) -> usize;
     fn index(&self) -> usize;
@@ -25,23 +25,25 @@ impl Entity {
 impl Entt for Entity {
     unsafe fn new(ver: usize, idx: usize) -> Self {
         debug_assert!(ver != 0);
-        debug_assert!(ver & Self::VER_MASK == ver);
+        debug_assert!(ver <= (Self::VER_MASK >> Self::VER_SHIFT));
         debug_assert!(idx & Self::IDX_MASK == idx);
 
         let ver = ver as u32;
         let idx = idx as u32;
 
         let raw = unsafe {
-            NonZeroU32::new_unchecked(ver << Self::VER_SHIFT  | idx)
+            NonZeroU32::new_unchecked(ver << Self::VER_SHIFT | idx)
         };
 
         Self { raw }
     }
 
+    #[inline]
     fn ver(&self) -> usize {
         (self.raw.get() >> Self::VER_SHIFT) as usize
     }
 
+    #[inline]
     fn index(&self) -> usize {
         (self.raw.get() & (Self::IDX_MASK as u32)) as usize
     }
@@ -62,10 +64,10 @@ impl Entity {
 }
 
 #[cfg(target_pointer_width="16")]
-impl Entity {
+impl Entt for Entity {
     unsafe fn new(ver: usize, idx: usize) -> Self {
         debug_assert!(ver != 0);
-        debug_assert!(ver & Self::VER_MASK == ver);
+        debug_assert!(ver <= (Self::VER_MASK >> Self::VER_SHIFT));
         debug_assert!(idx & Self::IDX_MASK == idx);
 
         let ver = ver as u16;
@@ -78,10 +80,12 @@ impl Entity {
         Self { raw }
     }
 
+    #[inline]
     fn ver(&self) -> usize {
         (self.raw.get() >> Self::VER_SHIFT) as usize
     }
 
+    #[inline]
     fn index(&self) -> usize {
         (self.raw.get() & (Self::IDX_MASK as u16)) as usize
     }
