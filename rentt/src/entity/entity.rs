@@ -1,92 +1,93 @@
-#[allow(unused_imports)]
-use std::num::{NonZeroU16, NonZeroU32};
+use crate::utils::Subscript;
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
-pub(crate) trait Entt: Copy + Clone + PartialEq + Eq {
-    unsafe fn new(ver: usize, idx: usize) -> Self;
-    fn ver(&self) -> usize;
-    fn index(&self) -> usize;
+pub trait EntityOps: Copy {
+    type Ver: Subscript;
+    type Id: Subscript;
+
+    fn new(ver: Self::Ver, id: Self::Id) -> Option<Self>;
+    unsafe fn new_unchecked(ver: Self::Ver, id: Self::Id) -> Self;
+    fn ver(&self) -> Self::Ver;
+    fn id(&self) -> Self::Id;
+    fn next_ver(self) -> Self;
+    fn locate<const N: usize>(&self) -> (Self::Id, Self::Id);
 }
 
-#[cfg(any(target_pointer_width="32", target_pointer_width="64"))]
-#[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Entity {
-    raw: NonZeroU32,
+macro_rules! impl_entity {
+    ($name:ident, $nonzero:ty, $ver_type:ty, $id_type:ty, $ver_shift:expr, $id_mask:expr) => {
+        #[repr(transparent)]
+        #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+        pub struct $name {
+            raw: $nonzero,
+        }
+
+        impl $name {
+            const VER_SHIFT: u8 = $ver_shift;
+            const ID_MASK: $id_type = $id_mask;
+        }
+
+        impl EntityOps for $name {
+            type Ver = $ver_type;
+            type Id = $id_type;
+
+            #[inline]
+            fn new(ver: Self::Ver, id: Self::Id) -> Option<Self> {
+                if ver == 0 || id > Self::ID_MASK {
+                    None
+                } else {
+                    let raw = (ver as $id_type) << Self::VER_SHIFT | id;
+                    debug_assert!(raw != 0);
+                    Some(Self {
+                        raw: unsafe { <$nonzero>::new_unchecked(raw) },
+                    })
+                }
+            }
+
+            #[inline]
+            unsafe fn new_unchecked(ver: Self::Ver, id: Self::Id) -> Self {
+                debug_assert!(ver != 0);
+                debug_assert!(id <= Self::ID_MASK);
+
+                let raw = (ver as $id_type) << Self::VER_SHIFT | id;
+                Self {
+                    raw: unsafe { <$nonzero>::new_unchecked(raw) },
+                }
+            }
+
+            #[inline]
+            fn ver(&self) -> Self::Ver {
+                (self.raw.get() >> Self::VER_SHIFT) as Self::Ver
+            }
+
+            #[inline]
+            fn id(&self) -> Self::Id {
+                self.raw.get() & Self::ID_MASK
+            }
+
+            #[inline]
+            fn next_ver(self) -> Self {
+                let new_ver = match self.ver().wrapping_add(1) {
+                    0 => 1,
+                    n => n,
+                };
+
+                let id = self.id();
+
+                unsafe { Self::new_unchecked(new_ver, id) }
+            }
+
+            #[inline]
+            fn locate<const N: usize>(&self) -> (Self::Id, Self::Id) {
+                let subscript = self.id().into_subscript();
+                let index = (subscript / N) as Self::Id;
+                let offset = (subscript % N) as Self::Id;
+                (index, offset)
+            }
+        }
+    };
 }
 
-#[cfg(any(target_pointer_width="32", target_pointer_width="64"))]
-impl Entity {
-    const VER_SHIFT: usize = 24;
-    const VER_MASK: usize = 0x0000_0000_FF00_0000;
-    const IDX_MASK: usize = 0x0000_0000_00FF_FFFF;
-}
+impl_entity!(Entity64, NonZeroU64, u16, u64, 48, 0x0000_FFFF_FFFF_FFFF);
+impl_entity!(Entity32, NonZeroU32, u8, u32, 24, 0x00FF_FFFF);
 
-#[cfg(any(target_pointer_width="32", target_pointer_width="64"))]
-impl Entt for Entity {
-    unsafe fn new(ver: usize, idx: usize) -> Self {
-        debug_assert!(ver != 0);
-        debug_assert!(ver <= (Self::VER_MASK >> Self::VER_SHIFT));
-        debug_assert!(idx & Self::IDX_MASK == idx);
-
-        let ver = ver as u32;
-        let idx = idx as u32;
-
-        let raw = unsafe {
-            NonZeroU32::new_unchecked(ver << Self::VER_SHIFT | idx)
-        };
-
-        Self { raw }
-    }
-
-    #[inline]
-    fn ver(&self) -> usize {
-        (self.raw.get() >> Self::VER_SHIFT) as usize
-    }
-
-    #[inline]
-    fn index(&self) -> usize {
-        (self.raw.get() & (Self::IDX_MASK as u32)) as usize
-    }
-}
-
-#[cfg(target_pointer_width="16")]
-#[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Entity {
-    raw: NonZeroU16,
-}
-
-#[cfg(target_pointer_width="16")]
-impl Entity {
-    const VER_SHIFT: usize = 12;
-    const VER_MASK: usize = 0x0000_0000_0000_F000;
-    const IDX_MASK: usize = 0x0000_0000_0000_0FFF;
-}
-
-#[cfg(target_pointer_width="16")]
-impl Entt for Entity {
-    unsafe fn new(ver: usize, idx: usize) -> Self {
-        debug_assert!(ver != 0);
-        debug_assert!(ver <= (Self::VER_MASK >> Self::VER_SHIFT));
-        debug_assert!(idx & Self::IDX_MASK == idx);
-
-        let ver = ver as u16;
-        let idx = idx as u16;
-
-        let raw = unsafe {
-            NonZeroU16::new_unchecked(ver << Self::VER_SHIFT | idx)
-        };
-
-        Self { raw }
-    }
-
-    #[inline]
-    fn ver(&self) -> usize {
-        (self.raw.get() >> Self::VER_SHIFT) as usize
-    }
-
-    #[inline]
-    fn index(&self) -> usize {
-        (self.raw.get() & (Self::IDX_MASK as u16)) as usize
-    }
-}
+pub type Entity = Entity32;
