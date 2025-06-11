@@ -9,4 +9,5 @@ license = "MIT"
 repository = "https://github.com/X1ngChui/rentt"
 
 [dependencies]
+nonmax = "0.5"
 rentt_macros = { path = "../rentt_macros" }
