@@ -1,3 +1,48 @@
+//! A specialized map that associates entities with values.
+//!
+//! `EntityMap` is a `HashMap`-like structure that uses entity IDs as keys.
+//! It is typically used in ECS-like systems where entities are represented by compact identifiers,
+//! and values are stored or updated independently.
+//!
+//! This map provides standard operations such as insertion, removal, lookup, and iteration,
+//! while automatically handling the entity keys in a type-safe way.
+//!
+//! # Examples
+//!
+//! ```
+//! use rentt::entity_fields::{EntityId, Id24};
+//! use rentt::entity::{Entity, Entity32};
+//! use rentt::entity_map::EntityMap;
+//!
+//! fn id(n: u32) -> Id24 {
+//!     Id24::new(n).unwrap()
+//! }
+//!
+//! let mut map = EntityMap::<Entity32, i32>::new();
+//! let e1 = Entity32::new(id(1));
+//! let e2 = Entity32::new(id(2));
+//!
+//! assert_eq!(map.insert(e1, 42), None);
+//! assert_eq!(map.insert(e2, 100), None);
+//!
+//! assert_eq!(map.get(e1), Some(&42));
+//! assert_eq!(map.get(e2), Some(&100));
+//!
+//! assert_eq!(map.remove(e1), Some(42));
+//! assert_eq!(map.get(e1), None);
+//! ```
+//!
+//! # Features
+//!
+//! - Type-safe entity keying
+//! - Efficient insert, remove, and lookup
+//! - Entity and value iteration support (`entities()`, `values()`, `values_mut()`, `iter()`)
+//!
+//! # Type Parameters
+//!
+//! * `K`: Entity type, typically `DefaultEntity`.
+//! * `V`: Value type to be stored.
+
 use crate::{entity::Entity, entity_fields::EntityId};
 use std::{hint::unreachable_unchecked, mem::replace, ptr};
 
@@ -414,7 +459,7 @@ impl<E: Entity, T> EntityMap<E, T> {
     }
 
     /// Checks whether entity exists in map.
-    pub fn contains(&self, entity: &E) -> bool {
+    pub fn contains(&self, entity: E) -> bool {
         let (index, offset) = Self::locate(&entity);
         let found_pool = self.pools.get(index);
 
@@ -425,7 +470,7 @@ impl<E: Entity, T> EntityMap<E, T> {
     }
 
     /// Gets immutable reference to component by entity.
-    pub fn get(&self, entity: &E) -> Option<&T> {
+    pub fn get(&self, entity: E) -> Option<&T> {
         if self.contains(entity) {
             Some(unsafe { self.get_unchecked(entity) })
         } else {
@@ -438,7 +483,7 @@ impl<E: Entity, T> EntityMap<E, T> {
     /// # Safety
     ///
     /// Caller must ensure entity exists.
-    pub unsafe fn get_unchecked(&self, entity: &E) -> &T {
+    pub unsafe fn get_unchecked(&self, entity: E) -> &T {
         debug_assert!(self.contains(entity));
 
         let (index, offset) = Self::locate(&entity);
@@ -451,7 +496,7 @@ impl<E: Entity, T> EntityMap<E, T> {
     }
 
     /// Gets mutable reference to component by entity.
-    pub fn get_mut(&mut self, entity: &E) -> Option<&mut T> {
+    pub fn get_mut(&mut self, entity: E) -> Option<&mut T> {
         if self.contains(entity) {
             Some(unsafe { self.get_unchecked_mut(entity) })
         } else {
@@ -464,7 +509,7 @@ impl<E: Entity, T> EntityMap<E, T> {
     /// # Safety
     ///
     /// Caller must ensure entity exists.
-    pub unsafe fn get_unchecked_mut(&mut self, entity: &E) -> &mut T {
+    pub unsafe fn get_unchecked_mut(&mut self, entity: E) -> &mut T {
         debug_assert!(self.contains(entity));
 
         let (index, offset) = Self::locate(&entity);
@@ -499,7 +544,7 @@ impl<E: Entity, T> EntityMap<E, T> {
     }
 
     /// Removes entity and returns component if exists.
-    pub fn remove(&mut self, entity: &E) -> Option<T> {
+    pub fn remove(&mut self, entity: E) -> Option<T> {
         let (index, offset) = Self::locate(&entity);
         let found_pool = self.pools.get_mut(index);
 
@@ -516,24 +561,24 @@ impl<E: Entity, T> EntityMap<E, T> {
     }
 
     /// Immutable iterator over all `(entity, component)` pairs.
-    pub fn iter(&self) -> impl Iterator<Item = (&E, &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (E, &T)> {
         self.pools
             .iter()
-            .flat_map(|pool| pool.iter().map(|(e, v)| (e, v)))
+            .flat_map(|pool| pool.iter().map(|(e, v)| (*e, v)))
     }
 
     /// Mutable iterator over all `(entity, component)` pairs.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&E, &mut T)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (E, &mut T)> {
         self.pools
             .iter_mut()
-            .flat_map(|pool| pool.iter_mut().map(|(e, v)| (&*e, v)))
+            .flat_map(|pool| pool.iter_mut().map(|(e, v)| (*e, v)))
     }
 
     /// Immutable iterator over entities only.
-    pub fn entities(&self) -> impl Iterator<Item = &E> {
+    pub fn entities(&self) -> impl Iterator<Item = E> {
         self.pools
             .iter()
-            .flat_map(|pool| pool.iter().map(|(e, _)| e))
+            .flat_map(|pool| pool.iter().map(|(e, _)| *e))
     }
 
     /// Immutable iterator over values only.
@@ -567,9 +612,9 @@ mod entity_map_tests {
         let e = Entity32::new(id(1));
 
         assert_eq!(map.insert(e, 42), None);
-        assert_eq!(map.get(&e), Some(&42));
-        assert_eq!(map.remove(&e), Some(42));
-        assert_eq!(map.get(&e), None);
+        assert_eq!(map.get(e), Some(&42));
+        assert_eq!(map.remove(e), Some(42));
+        assert_eq!(map.get(e), None);
     }
 
     #[test]
@@ -583,8 +628,8 @@ mod entity_map_tests {
 
         for i in 0..10 {
             let e = Entity32::new(id(i));
-            assert_eq!(map.get(&e), Some(&(i as i32)));
-            assert_eq!(map.remove(&e), Some(i as i32));
+            assert_eq!(map.get(e), Some(&(i as i32)));
+            assert_eq!(map.remove(e), Some(i as i32));
         }
 
         assert!(map.is_empty());
@@ -601,14 +646,14 @@ mod entity_map_tests {
 
         let e2 = Entity32::new(id(2));
         let e4 = Entity32::new(id(4));
-        assert_eq!(map.remove(&e2), Some(20));
-        assert_eq!(map.remove(&e4), Some(40));
+        assert_eq!(map.remove(e2), Some(20));
+        assert_eq!(map.remove(e4), Some(40));
 
         let e5 = Entity32::new(id(5));
         assert_eq!(map.insert(e5, 50), None);
 
-        assert_eq!(map.get(&e5), Some(&50));
-        assert_eq!(map.get(&e2), None);
+        assert_eq!(map.get(e5), Some(&50));
+        assert_eq!(map.get(e2), None);
     }
 
     #[test]
@@ -618,10 +663,10 @@ mod entity_map_tests {
 
         assert!(map.is_empty());
         assert_eq!(map.len(), 0);
-        assert!(!map.contains(&e));
+        assert!(!map.contains(e));
 
         map.insert(e, 123);
-        assert!(map.contains(&e));
+        assert!(map.contains(e));
         assert!(!map.is_empty());
         assert_eq!(map.len(), 1);
     }
@@ -659,7 +704,7 @@ mod entity_map_tests {
             map.insert(*e, e.id().into_index() as i32);
         }
 
-        let mut collected: Vec<_> = map.entities().cloned().collect();
+        let mut collected: Vec<_> = map.entities().collect();
         collected.sort_by_key(|e| e.id().into_index());
         assert_eq!(collected, ents);
     }
@@ -708,13 +753,13 @@ mod entity_map_tests {
 
         for i in 0..5 {
             let ent = Entity32::new(id(i * STRIDE));
-            assert_eq!(map.get(&ent), Some(&(i as i32)));
+            assert_eq!(map.get(ent), Some(&(i as i32)));
         }
 
         for i in 0..5 {
             let ent = Entity32::new(id(i * STRIDE));
-            assert_eq!(map.remove(&ent), Some(i as i32));
-            assert_eq!(map.get(&ent), None);
+            assert_eq!(map.remove(ent), Some(i as i32));
+            assert_eq!(map.get(ent), None);
         }
 
         assert!(map.is_empty());
@@ -734,17 +779,17 @@ mod entity_map_tests {
         assert_eq!(map.insert(ent_c, 3), None);
         assert_eq!(map.insert(ent_d, 4), None);
 
-        assert_eq!(map.remove(&ent_b), Some(2));
-        assert_eq!(map.remove(&ent_c), Some(3));
+        assert_eq!(map.remove(ent_b), Some(2));
+        assert_eq!(map.remove(ent_c), Some(3));
 
         let ent_e = Entity32::new(id(STRIDE * 200));
         assert_eq!(map.insert(ent_e, 5), None);
 
-        assert_eq!(map.get(&ent_a), Some(&1));
-        assert_eq!(map.get(&ent_b), None);
-        assert_eq!(map.get(&ent_c), None);
-        assert_eq!(map.get(&ent_d), Some(&4));
-        assert_eq!(map.get(&ent_e), Some(&5));
+        assert_eq!(map.get(ent_a), Some(&1));
+        assert_eq!(map.get(ent_b), None);
+        assert_eq!(map.get(ent_c), None);
+        assert_eq!(map.get(ent_d), Some(&4));
+        assert_eq!(map.get(ent_e), Some(&5));
     }
 
     #[test]
