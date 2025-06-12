@@ -28,8 +28,8 @@
 //! ### Bit-Packing Example
 //!
 //! ```ignore
-//! let packed: NonZeroU32 = ...; 
-//! let id_bits = packed.get() & Id24::MASK; 
+//! let packed: NonZeroU32 = ...;
+//! let id_bits = packed.get() & Id24::MASK;
 //! let id = Id24::new(id_bits).unwrap();
 //! ```
 //!
@@ -190,7 +190,9 @@ macro_rules! impl_entity_ver_for_nonzero {
         impl EntityVer for $t {
             type Base = $b;
             const MIN: Self = Self { raw: <$r>::MIN };
-            const MAX: Self = Self { raw: unsafe { <$r>::new_unchecked($max) } };
+            const MAX: Self = Self {
+                raw: unsafe { <$r>::new_unchecked($max) },
+            };
 
             #[inline]
             fn new(value: Self::Base) -> Option<Self> {
@@ -204,7 +206,9 @@ macro_rules! impl_entity_ver_for_nonzero {
             #[inline]
             unsafe fn new_unchecked(value: Self::Base) -> Self {
                 debug_assert!(value != 0 && value <= Self::MAX.get());
-                Self { raw: unsafe { <$r>::new_unchecked(value) } }
+                Self {
+                    raw: unsafe { <$r>::new_unchecked(value) },
+                }
             }
 
             #[inline]
@@ -213,16 +217,11 @@ macro_rules! impl_entity_ver_for_nonzero {
             }
 
             #[inline]
+            #[allow(unused_comparisons)]
             fn next(self) -> Self {
                 match self.raw.checked_add(1) {
-                    None => Self::MIN,
-                    Some(n) => {
-                        if n.get() > Self::MAX.get() {
-                            Self::MIN
-                        } else {
-                            Self { raw: n }
-                        }
-                    }
+                    Some(n) if n.get() <= Self::MAX.get() => Self { raw: n },
+                    _ => Self::MIN,
                 }
             }
         }
@@ -234,3 +233,73 @@ macro_rules! impl_entity_ver_for_nonzero {
 impl_entity_ver_for_nonzero!(Ver16, NonZeroU16, u16, 0xFFFF);
 impl_entity_ver_for_nonzero!(Ver8, NonZeroU8, u8, 0xFF);
 impl_entity_ver_for_nonzero!(Ver4, NonZeroU8, u8, 0x0F);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_id12() {
+        assert!(Id12::new(0).is_some());
+        assert!(Id12::new(0x1000).is_none());
+        let id = Id12::new(0x0FFF).unwrap();
+        assert_eq!(id.get(), 0x0FFF);
+
+        // index conversions
+        let index = id.into_index();
+        assert_eq!(index, 0x0FFF);
+        let id2 = unsafe { Id12::from_index(index) };
+        assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn test_id24() {
+        assert!(Id24::new(0).is_some());
+        assert!(Id24::new(0x0100_0000).is_none());
+        let id = Id24::new(0x00FF_FFFF).unwrap();
+        assert_eq!(id.get(), 0x00FF_FFFF);
+
+        let index = id.into_index();
+        assert_eq!(index, 0x00FF_FFFF);
+        let id2 = unsafe { Id24::from_index(index) };
+        assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn test_id48() {
+        assert!(Id48::new(0).is_some());
+        assert!(Id48::new(0x0001_0000_0000_0000).is_none());
+        let id = Id48::new(0x0000_FFFF_FFFF_FFFF).unwrap();
+        assert_eq!(id.get(), 0x0000_FFFF_FFFF_FFFF);
+
+        let index = id.into_index();
+        assert_eq!(index, 0x0000_FFFF_FFFF_FFFF);
+        let id2 = unsafe { Id48::from_index(index) };
+        assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn test_ver4() {
+        assert!(Ver4::new(0).is_none());
+        assert!(Ver4::new(16).is_none());
+        let ver = Ver4::new(15).unwrap();
+        assert_eq!(ver.get(), 15);
+        assert_eq!(ver.next().get(), 1);
+    }
+
+    #[test]
+    fn test_ver8() {
+        assert!(Ver8::new(0).is_none());
+        let ver = Ver8::new(255).unwrap();
+        assert_eq!(ver.get(), 255);
+        assert_eq!(ver.next().get(), 1);
+    }
+
+    #[test]
+    fn test_ver16() {
+        assert!(Ver16::new(0).is_none());
+        let ver = Ver16::new(65535).unwrap();
+        assert_eq!(ver.get(), 65535);
+        assert_eq!(ver.next().get(), 1);
+    }
+}

@@ -17,7 +17,7 @@
 //! | `Entity32`  | 32-bit     | 24      | 8            | 16,777,216          | 32-bit, 64-bit |
 //! | `Entity64`  | 64-bit     | 48      | 16           | 281,474,976,710,656 | 64-bit only    |
 
-//! 
+//!
 //!
 //! > **Note**: Due to platform-specific constraints, some types are conditionally available based on `target_pointer_width`.
 //!
