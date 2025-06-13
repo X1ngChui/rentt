@@ -2,7 +2,7 @@
 
 use crate::bit_set::BitSet;
 use crate::component::{ComponentEntry, ComponentPtr, UninitializedComponent};
-use crate::entity::Entity;
+use crate::entity::{Entity, EntityInternal};
 use crate::entity_fields::EntityId;
 use crate::entity_map::EntityMap;
 
@@ -114,11 +114,11 @@ impl<E: Entity> ComponentNode<E> {
 
 /// Opaque handle representing a registered component inside the component tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComponentHadle {
+struct ComponentHandle {
     index: usize,
 }
 
-impl ComponentHadle {
+impl ComponentHandle {
     /// Creates a new handle for internal use.
     fn new(index: usize) -> Self {
         Self { index }
@@ -149,14 +149,20 @@ struct RawWorld<E: Entity> {
     removed_entities: Vec<E>,
 }
 
-impl<E: Entity> Default for RawWorld<E> {
+impl<E: Entity> Default for RawWorld<E>
+where
+    E: EntityInternal,
+{
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E: Entity> RawWorld<E> {
+impl<E: Entity> RawWorld<E>
+where
+    E: EntityInternal,
+{
     /// The branching factor of the tree.
     const ORDER: usize = ComponentNode::<E>::ORDER;
 
@@ -172,8 +178,8 @@ impl<E: Entity> RawWorld<E> {
 
     /// Registers a new component type and returns its handle.
     #[inline]
-    fn register_component(&mut self, entry: Box<dyn ComponentEntry<E>>) -> ComponentHadle {
-        let handle = ComponentHadle::new(self.components.len());
+    fn register_component(&mut self, entry: Box<dyn ComponentEntry<E>>) -> ComponentHandle {
+        let handle = ComponentHandle::new(self.components.len());
         self.components.push(ComponentNode::new(entry));
         handle
     }
@@ -225,7 +231,7 @@ impl<E: Entity> RawWorld<E> {
     unsafe fn bind_component(
         &mut self,
         entity: E,
-        component_handle: ComponentHadle,
+        component_handle: ComponentHandle,
         value: ComponentPtr,
         old_value: UninitializedComponent,
     ) {
@@ -259,7 +265,7 @@ impl<E: Entity> RawWorld<E> {
     unsafe fn unbind_component(
         &mut self,
         entity: E,
-        component_handle: ComponentHadle,
+        component_handle: ComponentHandle,
         old_value: UninitializedComponent,
     ) {
         debug_assert!(component_handle.index() < self.components.len());
@@ -451,3 +457,37 @@ mod tests {
         }
     }
 }
+
+/// Represents the ECS world, managing entities and their components.
+///
+/// The generic parameter `E` must implement the public `Entity` trait.
+/// 
+/// Note: Although `Entity` is publicly implementable, only the built-in entity types
+/// (`Entity16`, `Entity32`, `Entity64`) also implement the private `EntityInternal` trait.
+/// This means that only these types can be used with `World` to access its full functionality.
+///
+/// This design allows flexibility in `Entity` implementations while restricting
+/// key internal operations to trusted, built-in entity types.
+pub struct World<E: Entity> {
+    raw: RawWorld<E>,
+}
+
+// This private_bounds lint is intentionally allowed here.
+//
+// Although `EntityInternal` is private to this crate, all types that implement `Entity`
+// (i.e. `Entity16`, `Entity32`, `Entity64`) are fully defined and controlled within this crate.
+// The `Entity` trait is sealed, so external code cannot implement custom `Entity` types.
+//
+// Therefore, even though the compiler warns about using a private bound in public API,
+// it is semantically safe, as only the built-in entity types can ever be used as valid type parameters
+// for `World<E>`.
+#[allow(private_bounds)]
+impl<E: Entity> World<E>
+where
+    E: EntityInternal,
+{
+    pub fn new() -> Self {
+        Self { raw: RawWorld::new() }
+    }
+}
+

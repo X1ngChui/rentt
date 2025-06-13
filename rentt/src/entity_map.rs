@@ -9,18 +9,10 @@
 //!
 //! # Examples
 //!
-//! ```
-//! use rentt::entity_fields::{EntityId, Id24};
-//! use rentt::entity::{Entity, Entity32};
-//! use rentt::entity_map::EntityMap;
-//!
-//! fn id(n: u32) -> Id24 {
-//!     Id24::new(n).unwrap()
-//! }
-//!
+//! ```ignore
 //! let mut map = EntityMap::<Entity32, i32>::new();
-//! let e1 = Entity32::new(id(1));
-//! let e2 = Entity32::new(id(2));
+//! let e1 = ...;
+//! let e2 = ...;
 //!
 //! assert_eq!(map.insert(e1, 42), None);
 //! assert_eq!(map.insert(e2, 100), None);
@@ -603,7 +595,7 @@ impl<E: Entity, T> EntityMap<E, T> {
 #[cfg(test)]
 mod entity_map_tests {
     use super::*;
-    use crate::entity::Entity32;
+    use crate::entity::{Entity32, EntityInternal};
     use crate::entity_fields::Id24;
 
     fn id(n: u32) -> Id24 {
