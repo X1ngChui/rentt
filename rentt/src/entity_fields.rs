@@ -59,10 +59,16 @@ pub trait EntityId: Clone + Copy + PartialEq + Eq {
     /// The number of bits used for this ID.
     const BITS: u32;
 
+    // The minimum allowed ID value.
+    const MIN: Self;
+
     /// The maximum allowed ID value.
     ///
     /// Also serves as a bitmask for extracting ID bits from packed integer representations.
     const MASK: Self::Base;
+
+    /// Returns the next ID if it does not overflow.
+    fn next(self) -> Option<Self>;
 
     /// Creates a new ID if the provided value is valid (i.e., `value <= MASK`).
     fn new(value: Self::Base) -> Option<Self>;
@@ -99,8 +105,21 @@ macro_rules! impl_entity_id_for_nonmax {
 
         impl EntityId for $t {
             type Base = $b;
+            const MIN: Self = Self {
+                raw: unsafe { <$r>::new_unchecked(0) },
+            };
             const BITS: u32 = $bits;
             const MASK: Self::Base = $mask;
+
+            #[inline]
+            fn next(self) -> Option<Self> {
+                let next = self.raw.get() + 1;
+                if next <= Self::MASK {
+                    Some(unsafe { Self::new_unchecked(next) })
+                } else {
+                    None
+                }
+            }
 
             #[inline]
             fn new(value: Self::Base) -> Option<Self> {
@@ -244,12 +263,17 @@ mod tests {
         assert!(Id12::new(0x1000).is_none());
         let id = Id12::new(0x0FFF).unwrap();
         assert_eq!(id.get(), 0x0FFF);
+        assert!(id.next().is_none());
 
         // index conversions
         let index = id.into_index();
         assert_eq!(index, 0x0FFF);
         let id2 = unsafe { Id12::from_index(index) };
         assert_eq!(id, id2);
+
+        let id3 = unsafe { Id12::from_index(0) };
+        let id4 = unsafe { Id12::from_index(1) };
+        assert_eq!(id3.next().unwrap(), id4);
     }
 
     #[test]
@@ -258,11 +282,16 @@ mod tests {
         assert!(Id24::new(0x0100_0000).is_none());
         let id = Id24::new(0x00FF_FFFF).unwrap();
         assert_eq!(id.get(), 0x00FF_FFFF);
+        assert!(id.next().is_none());
 
         let index = id.into_index();
         assert_eq!(index, 0x00FF_FFFF);
         let id2 = unsafe { Id24::from_index(index) };
         assert_eq!(id, id2);
+
+        let id3 = unsafe { Id24::from_index(0) };
+        let id4 = unsafe { Id24::from_index(1) };
+        assert_eq!(id3.next().unwrap(), id4);
     }
 
     #[test]
@@ -271,11 +300,16 @@ mod tests {
         assert!(Id48::new(0x0001_0000_0000_0000).is_none());
         let id = Id48::new(0x0000_FFFF_FFFF_FFFF).unwrap();
         assert_eq!(id.get(), 0x0000_FFFF_FFFF_FFFF);
+        assert!(id.next().is_none());
 
         let index = id.into_index();
         assert_eq!(index, 0x0000_FFFF_FFFF_FFFF);
         let id2 = unsafe { Id48::from_index(index) };
         assert_eq!(id, id2);
+
+        let id3 = unsafe { Id48::from_index(0) };
+        let id4 = unsafe { Id48::from_index(1) };
+        assert_eq!(id3.next().unwrap(), id4);
     }
 
     #[test]

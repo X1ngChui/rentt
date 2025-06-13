@@ -82,9 +82,9 @@ impl<T, I: EntityId> Pool<T, I> {
     /// Creates a new pool with the given capacity.
     ///
     /// The `capacity` argument specifies the maximum number of entity IDs that can be handled.
-    fn new(capacity: I) -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
-            indices: vec![None; capacity.into_index()].into_boxed_slice(),
+            indices: vec![None; capacity].into_boxed_slice(),
             values: Vec::new(),
         }
     }
@@ -267,7 +267,7 @@ mod pool_tests {
 
     #[test]
     fn test_single_insert_remove() {
-        let mut pool = Pool::<i32, Id24>::new(id(10));
+        let mut pool = Pool::<i32, Id24>::new(10);
 
         unsafe {
             assert_eq!(pool.insert(id(3), 99), None);
@@ -281,7 +281,7 @@ mod pool_tests {
 
     #[test]
     fn test_multiple_insert_remove() {
-        let mut pool = Pool::<i32, Id24>::new(id(10));
+        let mut pool = Pool::<i32, Id24>::new(10);
 
         unsafe {
             for i in 0..10 {
@@ -302,7 +302,7 @@ mod pool_tests {
 
     #[test]
     fn test_full_capacity() {
-        let mut pool = Pool::<i32, Id24>::new(id(5));
+        let mut pool = Pool::<i32, Id24>::new(5);
 
         unsafe {
             for i in 0..5 {
@@ -316,7 +316,7 @@ mod pool_tests {
 
     #[test]
     fn test_mixed_insert_remove() {
-        let mut pool = Pool::<i32, Id24>::new(id(10));
+        let mut pool = Pool::<i32, Id24>::new(10);
 
         unsafe {
             assert_eq!(pool.insert(id(1), 11), None);
@@ -332,7 +332,7 @@ mod pool_tests {
 
     #[test]
     fn test_is_empty_and_is_full() {
-        let mut pool = Pool::<i32, Id24>::new(id(2));
+        let mut pool = Pool::<i32, Id24>::new(2);
 
         assert!(pool.is_empty());
         assert!(!pool.is_full());
@@ -353,7 +353,7 @@ mod pool_tests {
 
     #[test]
     fn test_contains() {
-        let mut pool = Pool::<i32, Id24>::new(id(10));
+        let mut pool = Pool::<i32, Id24>::new(10);
 
         assert!(!pool.contains(id(5)));
 
@@ -372,7 +372,7 @@ mod pool_tests {
 
     #[test]
     fn test_iter() {
-        let mut pool = Pool::<i32, Id24>::new(id(5));
+        let mut pool = Pool::<i32, Id24>::new(5);
 
         unsafe {
             pool.insert(id(0), 100);
@@ -389,7 +389,7 @@ mod pool_tests {
 
     #[test]
     fn test_iter_mut() {
-        let mut pool = Pool::<i32, Id24>::new(id(5));
+        let mut pool = Pool::<i32, Id24>::new(5);
 
         unsafe {
             pool.insert(id(0), 1);
@@ -410,12 +410,17 @@ mod pool_tests {
 
 /// Calculates block size based on value size for internal pool partitioning.
 const fn block_size(size: usize) -> usize {
-    if size <= 256 {
-        64
-    } else if size <= 1024 {
-        16
+    const PAGE_SIZE: usize = 4096;
+    const MIN_BLOCK_SIZE: usize = 8;
+    const MAX_BLOCK_SIZE: usize = 64;
+
+    let block_size = (PAGE_SIZE / size).next_power_of_two();
+    if block_size < MIN_BLOCK_SIZE {
+        MIN_BLOCK_SIZE
+    } else if block_size > MAX_BLOCK_SIZE {
+        MAX_BLOCK_SIZE
     } else {
-        4
+        block_size
     }
 }
 
@@ -528,9 +533,8 @@ impl<E: Entity, T> EntityMap<E, T> {
         let (index, offset) = Self::locate(&entity);
 
         if self.pools.get(index).is_none() {
-            self.pools.resize_with(index + 1, || {
-                Pool::new(unsafe { E::Id::from_index(Self::BLOCK_SIZE) })
-            });
+            self.pools
+                .resize_with(index + 1, || Pool::new(Self::BLOCK_SIZE));
         }
 
         let pool = unsafe { self.pools.get_unchecked_mut(index) };
