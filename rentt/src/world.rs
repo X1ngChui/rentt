@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::mem::replace;
+
 use crate::bit_set::BitSet;
 use crate::component::{ComponentEntry, ComponentPtr, UninitializedComponent};
 use crate::entity::{Entity, EntityInternal};
@@ -23,9 +25,18 @@ use crate::entity_map::EntityMap;
 /// - `E`: The entity identifier type.
 struct ComponentNode<E: Entity> {
     /// Type-erased component storage backend for this node.
-    entry: Box<dyn ComponentEntry<E>>,
+    entry: Option<Box<dyn ComponentEntry<E>>>,
     /// Per-entity bit set indicating which subtrees contain active components.
     bit_signs: EntityMap<E, BitSet>,
+}
+
+impl<E: Entity> Default for ComponentNode<E> {
+    fn default() -> Self {
+        Self {
+            entry: None,
+            bit_signs: EntityMap::new(),
+        }
+    }
 }
 
 impl<E: Entity> ComponentNode<E> {
@@ -34,7 +45,7 @@ impl<E: Entity> ComponentNode<E> {
 
     /// Creates a new component node with the given storage backend.
     #[inline]
-    fn new(entry: Box<dyn ComponentEntry<E>>) -> Self {
+    fn new(entry: Option<Box<dyn ComponentEntry<E>>>) -> Self {
         Self {
             entry,
             bit_signs: EntityMap::new(),
@@ -48,8 +59,8 @@ impl<E: Entity> ComponentNode<E> {
     /// - `old_value` must point to uninitialized storage able to receive the previous value.
     #[inline]
     unsafe fn insert(&mut self, entity: E, value: ComponentPtr, old_value: UninitializedComponent) {
-        unsafe {
-            self.entry.insert(entity, value, old_value);
+        if let Some(entry) = &mut self.entry {
+            unsafe { entry.insert(entity, value, old_value); }
         }
     }
 
@@ -59,8 +70,8 @@ impl<E: Entity> ComponentNode<E> {
     /// - `value` must point to a valid component instance.
     #[inline]
     unsafe fn insert_without_value(&mut self, entity: E, value: ComponentPtr) {
-        unsafe {
-            self.entry.insert_without_value(entity, value);
+        if let Some(entry) = &mut self.entry {
+            unsafe { entry.insert_without_value(entity, value); }
         }
     }
 
@@ -70,15 +81,17 @@ impl<E: Entity> ComponentNode<E> {
     /// - `removed` must point to uninitialized memory for receiving old value.
     #[inline]
     unsafe fn remove(&mut self, entity: E, removed: UninitializedComponent) {
-        unsafe {
-            self.entry.remove(entity, removed);
+        if let Some(entry) = &mut self.entry {
+            unsafe { entry.remove(entity, removed); }
         }
     }
 
     /// Removes component value for the given entity, ignoring old value.
     #[inline]
     fn remove_without_value(&mut self, entity: E) {
-        self.entry.remove_without_value(entity);
+        if let Some(entry) = &mut self.entry {
+            entry.remove_without_value(entity);
+        }
     }
 
     /// Sets presence of the entity in a specific child subtree by inserting the given sign bit.
@@ -178,10 +191,21 @@ where
 
     /// Registers a new component type and returns its handle.
     #[inline]
-    fn register_component(&mut self, entry: Box<dyn ComponentEntry<E>>) -> ComponentHandle {
-        let handle = ComponentHandle::new(self.components.len());
-        self.components.push(ComponentNode::new(entry));
-        handle
+    fn register_component(
+        &mut self, 
+        component_handle: ComponentHandle,
+        entry: Box<dyn ComponentEntry<E>>
+    ) -> Option<Box<dyn ComponentEntry<E>>> {
+        let component_index = component_handle.index();
+        let new_node = ComponentNode::new(Some(entry));
+        if component_index >= self.components.len() {
+            self.components.resize_with(component_index, || ComponentNode::default());
+            self.components.push(new_node);
+            None
+        } else {
+            let old_node = replace(unsafe { self.components.get_unchecked_mut(component_index) }, new_node);
+            old_node.entry
+        }
     }
 
     /// Allocates a new entity.
@@ -291,7 +315,8 @@ mod tests {
 
         // Register component storage
         let storage = ComponentStorage::<Entity32, i32>::new();
-        let handle = world.register_component(Box::new(storage));
+        let handle = ComponentHandle::new(0);
+        world.register_component(handle, Box::new(storage));
 
         // Allocate entity
         let entity = world.new_entity().unwrap();
@@ -339,8 +364,10 @@ mod tests {
         let storage_a = ComponentStorage::<Entity32, i32>::new();
         let storage_b = ComponentStorage::<Entity32, u64>::new();
 
-        let handle_a = world.register_component(Box::new(storage_a));
-        let handle_b = world.register_component(Box::new(storage_b));
+        let handle_a = ComponentHandle::new(1);
+        let handle_b = ComponentHandle::new(10);
+        world.register_component(handle_a, Box::new(storage_a));
+        world.register_component(handle_b, Box::new(storage_b));
 
         let entity1 = world.new_entity().unwrap();
         let entity2 = world.new_entity().unwrap();
@@ -401,9 +428,10 @@ mod tests {
 
         // Dynamically register a large number of components
         let mut handles = Vec::new();
-        for _ in 0..COMPONENT_COUNT {
+        for i in 0..COMPONENT_COUNT {
             let storage = ComponentStorage::<Entity32, usize>::new();
-            let handle = world.register_component(Box::new(storage));
+            let handle = ComponentHandle::new(i * 2);
+            world.register_component(handle, Box::new(storage));
             handles.push(handle);
         }
 
