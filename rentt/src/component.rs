@@ -1,7 +1,14 @@
 #![allow(dead_code)]
 
 use crate::{entity::Entity, entity_map::EntityMap};
-use std::{mem::MaybeUninit, ptr};
+use std::{
+    mem::MaybeUninit,
+    ptr,
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 /// Type-erased immutable pointer to a component value.
 ///
@@ -112,5 +119,35 @@ impl<E: Entity, T> ComponentEntry<E> for ComponentStorage<E, T> {
 
     fn remove_without_value(&mut self, entity: E) {
         let _ = self.storage.remove(entity);
+    }
+}
+
+/// Opaque handle representing a registered component inside the component tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentHandle {
+    index: usize,
+}
+
+impl ComponentHandle {
+    /// Creates a new handle for internal use.
+    pub(crate) fn new(index: usize) -> Self {
+        Self { index }
+    }
+
+    /// Returns internal index of the component.
+    pub(crate) fn index(&self) -> usize {
+        self.index
+    }
+}
+
+#[inline]
+fn counter() -> usize {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+pub trait Component: 'static {
+    fn handle() -> ComponentHandle {
+        static HANDLE: OnceLock<ComponentHandle> = OnceLock::new();
+        *HANDLE.get_or_init(|| ComponentHandle::new(counter()))
     }
 }

@@ -1,9 +1,20 @@
 #![allow(dead_code)]
 
-use std::mem::replace;
+//! ECS World implementation.
+//!
+//! Provides basic entity-component management with automatic component registration.
+//!
+//! This implementation supports any `Entity` type defined by the crate
+//! (e.g., `Entity16`, `Entity32`, `Entity64`) and any `Component` type
+//! that does not contain references.
+
+use std::mem::{MaybeUninit, replace};
 
 use crate::bit_set::BitSet;
-use crate::component::{ComponentEntry, ComponentPtr, UninitializedComponent};
+use crate::component::{
+    Component, ComponentEntry, ComponentHandle, ComponentPtr, ComponentStorage,
+    UninitializedComponent,
+};
 use crate::entity::{Entity, EntityInternal};
 use crate::entity_fields::EntityId;
 use crate::entity_map::EntityMap;
@@ -131,24 +142,6 @@ impl<E: Entity> ComponentNode<E> {
     }
 }
 
-/// Opaque handle representing a registered component inside the component tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ComponentHandle {
-    index: usize,
-}
-
-impl ComponentHandle {
-    /// Creates a new handle for internal use.
-    fn new(index: usize) -> Self {
-        Self { index }
-    }
-
-    /// Returns internal index of the component.
-    fn index(&self) -> usize {
-        self.index
-    }
-}
-
 /// Core storage implementation of the entity-component system, handling only type-erased data.
 ///
 /// `RawWorld` maintains:
@@ -172,7 +165,6 @@ impl<E: Entity> Default for RawWorld<E>
 where
     E: EntityInternal,
 {
-    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -192,6 +184,15 @@ where
             components: Vec::new(),
             next_entity_id: Some(<E::Id as EntityId>::MIN),
             removed_entities: Vec::new(),
+        }
+    }
+
+    /// Returns true if the component type has been registered.
+    #[inline]
+    fn is_registered(&self, component_handle: ComponentHandle) -> bool {
+        match self.components.get(component_handle.index()) {
+            None => false,
+            Some(node) => node.entry.is_some(),
         }
     }
 
@@ -324,7 +325,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+mod raw_world_tests {
     use super::*;
     use crate::component::{ComponentPtr, ComponentStorage, UninitializedComponent};
     use crate::entity::Entity32;
@@ -387,8 +388,16 @@ mod tests {
 
         let handle_a = ComponentHandle::new(1);
         let handle_b = ComponentHandle::new(10);
-        world.register_component(handle_a, Box::new(storage_a));
-        world.register_component(handle_b, Box::new(storage_b));
+        assert!(
+            world
+                .register_component(handle_a, Box::new(storage_a))
+                .is_none()
+        );
+        assert!(
+            world
+                .register_component(handle_b, Box::new(storage_b))
+                .is_none()
+        );
 
         let entity1 = world.new_entity().unwrap();
         let entity2 = world.new_entity().unwrap();
@@ -451,7 +460,7 @@ mod tests {
         let mut handles = Vec::new();
         for i in 0..COMPONENT_COUNT {
             let storage = ComponentStorage::<Entity32, usize>::new();
-            let handle = ComponentHandle::new(i * 2);
+            let handle = ComponentHandle::new(i);
             world.register_component(handle, Box::new(storage));
             handles.push(handle);
         }
@@ -514,30 +523,135 @@ mod tests {
 /// Note: Although `Entity` is publicly implementable, only the built-in entity types
 /// (`Entity16`, `Entity32`, `Entity64`) also implement the private `EntityInternal` trait.
 /// This means that only these types can be used with `World` to access its full functionality.
-///
-/// This design allows flexibility in `Entity` implementations while restricting
-/// key internal operations to trusted, built-in entity types.
 pub struct World<E: Entity> {
     raw: RawWorld<E>,
 }
 
-// This private_bounds lint is intentionally allowed here.
-//
-// Although `EntityInternal` is private to this crate, all types that implement `Entity`
-// (i.e. `Entity16`, `Entity32`, `Entity64`) are fully defined and controlled within this crate.
-// The `Entity` trait is sealed, so external code cannot implement custom `Entity` types.
-//
-// Therefore, even though the compiler warns about using a private bound in public API,
-// it is semantically safe, as only the built-in entity types can ever be used as valid type parameters
-// for `World<E>`.
+impl<E: Entity> Default for World<E>
+where
+    E: EntityInternal,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A container for managing entities and components.
+///
+/// Each `World` owns a set of entities and their associated components.
+/// Components are automatically registered upon first use.
 #[allow(private_bounds)]
 impl<E: Entity> World<E>
 where
     E: EntityInternal,
 {
+    /// Creates a new empty world.
+    #[inline]
     pub fn new() -> Self {
         Self {
             raw: RawWorld::new(),
         }
+    }
+
+    /// Allocates a new entity.
+    ///
+    /// Returns `Some(entity)` if successful, or `None` if the entity pool is exhausted.
+    #[inline]
+    pub fn new_entity(&mut self) -> Option<E> {
+        self.raw.new_entity()
+    }
+
+    /// Removes an existing entity and all its associated components.
+    #[inline]
+    pub fn remove_entity(&mut self, entity: E) {
+        self.raw.remove_entity(entity);
+    }
+
+    /// Lazily registers the component type `T` if it hasn't been registered yet.
+    ///
+    /// Returns the corresponding `ComponentHandle`.
+    #[inline]
+    fn try_register<T: Component>(&mut self) -> ComponentHandle {
+        let handle = T::handle();
+        if !self.raw.is_registered(handle) {
+            let entry = Box::new(ComponentStorage::<E, T>::new());
+            self.raw.register_component(handle, entry);
+        }
+        handle
+    }
+
+    /// Binds a component instance of type `T` to the given entity.
+    ///
+    /// If the entity already has a component of type `T`, it will be replaced and returned.
+    pub fn bind_component<T: Component>(&mut self, entity: E, value: T) -> Option<T> {
+        let handle = self.try_register::<T>();
+
+        let mut old_value = MaybeUninit::<Option<T>>::uninit();
+        unsafe {
+            self.raw.bind_component(
+                entity,
+                handle,
+                &value as *const T as ComponentPtr,
+                old_value.as_mut_ptr() as UninitializedComponent,
+            );
+            old_value.assume_init()
+        }
+    }
+
+    /// Unbinds and removes a component of type `T` from the given entity.
+    ///
+    /// Returns the removed component if it existed.
+    pub fn unbind_component<T: Component>(&mut self, entity: E) -> Option<T> {
+        let handle = self.try_register::<T>();
+
+        let mut old_value = MaybeUninit::<Option<T>>::uninit();
+        unsafe {
+            self.raw.unbind_component(
+                entity,
+                handle,
+                old_value.as_mut_ptr() as UninitializedComponent,
+            );
+            old_value.assume_init()
+        }
+    }
+}
+
+#[cfg(test)]
+mod world_tests {
+    use super::*;
+    use crate::entity::Entity32;
+
+    #[derive(Debug, PartialEq)]
+    struct Position(i32, i32);
+
+    impl Component for Position {}
+
+    #[test]
+    fn test_entity_creation_and_removal() {
+        let mut world = World::<Entity32>::new();
+        let entity = world.new_entity().expect("Failed to create entity");
+        world.remove_entity(entity);
+    }
+
+    #[test]
+    fn test_bind_and_unbind_component() {
+        let mut world = World::<Entity32>::new();
+        let entity = world.new_entity().expect("Failed to create entity");
+
+        // Bind component
+        let old = world.bind_component(entity, Position(10, 20));
+        assert!(old.is_none());
+
+        // Overwrite component
+        let replaced = world.bind_component(entity, Position(30, 40));
+        assert_eq!(replaced, Some(Position(10, 20)));
+
+        // Unbind component
+        let removed = world.unbind_component::<Position>(entity);
+        assert_eq!(removed, Some(Position(30, 40)));
+
+        // Unbind again (should be None)
+        let removed_again = world.unbind_component::<Position>(entity);
+        assert!(removed_again.is_none());
     }
 }

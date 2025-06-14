@@ -66,7 +66,7 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 /// Provides read-only access to entity ID and version.
 ///
 /// Implementations should pack ID and version compactly but expose only safe, immutable accessors.
-pub trait Entity: Copy + Clone + PartialEq + Eq {
+pub trait Entity: Copy + Clone + PartialEq + Eq + 'static {
     /// The ID type used by this entity.
     type Id: EntityId;
     /// The version type used by this entity.
