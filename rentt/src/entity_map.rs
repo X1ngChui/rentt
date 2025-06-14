@@ -524,19 +524,26 @@ impl<E: Entity, T> EntityMap<E, T> {
     pub fn insert(&mut self, entity: E, value: T) -> Option<T> {
         let (index, offset) = Self::locate(&entity);
 
-        if self.pools.get(index).is_none() {
-            self.pools
-                .resize_with(index + 1, || Pool::new(Self::BLOCK_SIZE));
+        let ret = match self.pools.get_mut(index) {
+            Some(pool) => unsafe { pool.insert(offset, (entity, value)) },
+            None => {
+                self.pools
+                    .resize_with(index + 1, || Pool::new(Self::BLOCK_SIZE));
+                let pool = unsafe { self.pools.get_unchecked_mut(index) };
+                unsafe { pool.insert(offset, (entity, value)) }
+            }
+        };
+
+        match ret {
+            Some((old_entity, old_value)) => {
+                debug_assert!(entity == old_entity);
+                Some(old_value)
+            }
+            None => {
+                self.len += 1;
+                None
+            }
         }
-
-        let pool = unsafe { self.pools.get_unchecked_mut(index) };
-        let res = unsafe { pool.insert(offset, (entity, value)) };
-
-        if res.is_none() {
-            self.len += 1;
-        }
-
-        res.map(|(_, v)| v)
     }
 
     /// Removes entity and returns component if exists.

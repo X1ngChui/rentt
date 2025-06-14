@@ -79,7 +79,6 @@ pub trait Entity: Copy + Clone + PartialEq + Eq {
     fn ver(&self) -> Self::Ver;
 }
 
-
 /// Internal trait extending `Entity` with entity construction and version management methods.
 ///
 /// This trait is crate-private and intended for internal use only, hiding implementation details from public API.

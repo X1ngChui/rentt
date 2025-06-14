@@ -60,7 +60,9 @@ impl<E: Entity> ComponentNode<E> {
     #[inline]
     unsafe fn insert(&mut self, entity: E, value: ComponentPtr, old_value: UninitializedComponent) {
         if let Some(entry) = &mut self.entry {
-            unsafe { entry.insert(entity, value, old_value); }
+            unsafe {
+                entry.insert(entity, value, old_value);
+            }
         }
     }
 
@@ -71,7 +73,9 @@ impl<E: Entity> ComponentNode<E> {
     #[inline]
     unsafe fn insert_without_value(&mut self, entity: E, value: ComponentPtr) {
         if let Some(entry) = &mut self.entry {
-            unsafe { entry.insert_without_value(entity, value); }
+            unsafe {
+                entry.insert_without_value(entity, value);
+            }
         }
     }
 
@@ -82,7 +86,9 @@ impl<E: Entity> ComponentNode<E> {
     #[inline]
     unsafe fn remove(&mut self, entity: E, removed: UninitializedComponent) {
         if let Some(entry) = &mut self.entry {
-            unsafe { entry.remove(entity, removed); }
+            unsafe {
+                entry.remove(entity, removed);
+            }
         }
     }
 
@@ -189,22 +195,37 @@ where
         }
     }
 
-    /// Registers a new component type and returns its handle.
+    /// Registers (or replaces) a component entry for the specified handle, returning any previous entry.
     #[inline]
     fn register_component(
-        &mut self, 
+        &mut self,
         component_handle: ComponentHandle,
-        entry: Box<dyn ComponentEntry<E>>
+        entry: Box<dyn ComponentEntry<E>>,
     ) -> Option<Box<dyn ComponentEntry<E>>> {
         let component_index = component_handle.index();
         let new_node = ComponentNode::new(Some(entry));
-        if component_index >= self.components.len() {
-            self.components.resize_with(component_index, || ComponentNode::default());
-            self.components.push(new_node);
-            None
-        } else {
-            let old_node = replace(unsafe { self.components.get_unchecked_mut(component_index) }, new_node);
-            old_node.entry
+
+        match self.components.get_mut(component_index) {
+            None => {
+                // If the index is out of bounds, we need to grow the components vector.
+
+                // Resize the vector up to component_index (exclusive), filling with default ComponentNodes.
+                self.components
+                    .resize_with(component_index, || ComponentNode::default());
+
+                // After resize, append the new node to occupy the exact component_index slot.
+                self.components.push(new_node);
+
+                // No previous entry existed at this index, return None.
+                None
+            }
+            Some(target) => {
+                // The index is within bounds; replace the existing node with the new one.
+                let old_node = replace(target, new_node);
+
+                // Return the previous entry (if any).
+                old_node.entry
+            }
         }
     }
 
@@ -489,7 +510,7 @@ mod tests {
 /// Represents the ECS world, managing entities and their components.
 ///
 /// The generic parameter `E` must implement the public `Entity` trait.
-/// 
+///
 /// Note: Although `Entity` is publicly implementable, only the built-in entity types
 /// (`Entity16`, `Entity32`, `Entity64`) also implement the private `EntityInternal` trait.
 /// This means that only these types can be used with `World` to access its full functionality.
@@ -515,7 +536,8 @@ where
     E: EntityInternal,
 {
     pub fn new() -> Self {
-        Self { raw: RawWorld::new() }
+        Self {
+            raw: RawWorld::new(),
+        }
     }
 }
-
