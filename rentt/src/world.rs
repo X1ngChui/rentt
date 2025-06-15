@@ -1,120 +1,119 @@
 #![allow(dead_code)]
 
-//! ECS World implementation.
+//! # Entity-Component-System (ECS) World Implementation
 //!
-//! Provides basic entity-component management with automatic component registration.
+//! This module provides a basic ECS world implementation with automatic component registration.
+//! It supports various entity types (`Entity16`, `Entity32`, `Entity64`) and components that do not
+//! contain references. The implementation uses a tree-based structure for efficient component
+//! storage and retrieval.
 //!
-//! This implementation supports any `Entity` type defined by the crate
-//! (e.g., `Entity16`, `Entity32`, `Entity64`) and any `Component` type
-//! that does not contain references.
+//! ## Available World Types
+//!
+//! | World Type | Entity Type | Max Live Entities   | Platforms      |
+//! | ---------- | ----------- | ------------------- | -------------- |
+//! | `World16`  | `Entity16`  | 4,096               | All platforms  |
+//! | `World32`  | `Entity32`  | 16,777,216          | 32-bit & 64-bit|
+//! | `World64`  | `Entity64`  | 281,474,976,710,656 | 64-bit only    |
+//!
+//! ## Default World Type
+//!
+//! The default `World` type, aliased as `DefaultWorld`, is selected based on the target platform:
+//!
+//! - On 64-bit platforms, `DefaultWorld` is `World32`.
+//! - On 32-bit platforms, `DefaultWorld` is `World32`.
+//! - On 16-bit platforms, `DefaultWorld` is `World16`.
 
-use std::mem::{MaybeUninit, replace};
+use std::mem::MaybeUninit;
+use std::sync::{OnceLock, RwLock};
 
 use crate::bit_set::BitSet;
 use crate::component::{
-    Component, ComponentEntry, ComponentHandle, ComponentPtr, ComponentStorage,
-    UninitializedComponent,
+    Component, ComponentEntry, ComponentHandle, ComponentPtr, ComponentRegistry, ComponentStorage,
+    ComponentStorageConstructor, UninitializedComponent,
 };
-use crate::entity::{Entity, EntityInternal};
+use crate::entity::{Entity, Entity16, Entity32, Entity64};
 use crate::entity_fields::EntityId;
 use crate::entity_map::EntityMap;
 
-/// Internal node representing a component storage entry in the component tree.
+/// Internal node in the component tree, managing component storage and subtree presence.
 ///
-/// `ComponentNode` forms part of a multi-way complete tree structure that organizes
-/// all component storages hierarchically.
+/// This struct is part of a multi-way complete tree structure for organizing component storages:
+/// - The root is at level 0.
+/// - Each node can have up to `ORDER` children, where `ORDER` is the bit width of `BitSet`.
+/// - Per-entity `BitSet`s track which subtrees contain components, enabling efficient iteration
+///   by skipping irrelevant branches.
 ///
-/// The tree structure works as:
-/// - Root node is at level 0.
-/// - Each node has up to `ORDER` child nodes, where `ORDER` equals the bit width of `BitSet`.
-/// - Each entity maintains its presence in subtrees through per-node BitSets.
+/// # Type Parameters
 ///
-/// This tree allows efficiently skipping entire subtrees during iteration when the entity
-/// does not have any components under certain branches.
-///
-/// # Type parameters
-/// - `E`: The entity identifier type.
+/// - `E`: The entity identifier type, implementing the `Entity` trait.
 struct ComponentNode<E: Entity> {
-    /// Type-erased component storage backend for this node.
-    entry: Option<Box<dyn ComponentEntry<E>>>,
-    /// Per-entity bit set indicating which subtrees contain active components.
+    /// Type-erased storage backend for components at this node.
+    entry: Box<dyn ComponentEntry<E>>,
+    /// Map of entities to bit sets, indicating active subtrees for each entity.
     bit_signs: EntityMap<E, BitSet>,
 }
 
-impl<E: Entity> Default for ComponentNode<E> {
-    fn default() -> Self {
-        Self {
-            entry: None,
-            bit_signs: EntityMap::new(),
-        }
-    }
-}
-
 impl<E: Entity> ComponentNode<E> {
-    /// Tree branching factor (equals to number of bits in `BitSet`).
+    /// The branching factor of the tree, equal to the number of bits in `BitSet`.
     const ORDER: usize = BitSet::BITS;
 
-    /// Creates a new component node with the given storage backend.
+    /// Creates a new `ComponentNode` with the specified storage backend.
     #[inline]
-    fn new(entry: Option<Box<dyn ComponentEntry<E>>>) -> Self {
+    fn new(entry: Box<dyn ComponentEntry<E>>) -> Self {
         Self {
             entry,
             bit_signs: EntityMap::new(),
         }
     }
 
-    /// Inserts a component value into the storage, returning previous value into `old_value`.
+    /// Inserts a component for an entity, storing the previous value (if any) in `old_value`.
     ///
     /// # Safety
+    ///
     /// - `value` must point to a valid component instance.
-    /// - `old_value` must point to uninitialized storage able to receive the previous value.
+    /// - `old_value` must point to uninitialized memory capable of receiving the previous value.
     #[inline]
     unsafe fn insert(&mut self, entity: E, value: ComponentPtr, old_value: UninitializedComponent) {
-        if let Some(entry) = &mut self.entry {
-            unsafe {
-                entry.insert(entity, value, old_value);
-            }
+        unsafe {
+            self.entry.insert(entity, value, old_value);
         }
     }
 
-    /// Inserts without retrieving old value.
+    /// Inserts a component for an entity without retrieving the previous value.
     ///
     /// # Safety
+    ///
     /// - `value` must point to a valid component instance.
     #[inline]
     unsafe fn insert_without_value(&mut self, entity: E, value: ComponentPtr) {
-        if let Some(entry) = &mut self.entry {
-            unsafe {
-                entry.insert_without_value(entity, value);
-            }
+        unsafe {
+            self.entry.insert_without_value(entity, value);
         }
     }
 
-    /// Removes component value for the given entity, writing previous value into `removed`.
+    /// Removes a component for an entity, storing it in `removed`.
     ///
     /// # Safety
-    /// - `removed` must point to uninitialized memory for receiving old value.
+    ///
+    /// - `removed` must point to uninitialized memory capable of receiving the removed value.
     #[inline]
     unsafe fn remove(&mut self, entity: E, removed: UninitializedComponent) {
-        if let Some(entry) = &mut self.entry {
-            unsafe {
-                entry.remove(entity, removed);
-            }
+        unsafe {
+            self.entry.remove(entity, removed);
         }
     }
 
-    /// Removes component value for the given entity, ignoring old value.
+    /// Removes a component for an entity without retrieving the value.
     #[inline]
     fn remove_without_value(&mut self, entity: E) {
-        if let Some(entry) = &mut self.entry {
-            entry.remove_without_value(entity);
-        }
+        self.entry.remove_without_value(entity);
     }
 
-    /// Sets presence of the entity in a specific child subtree by inserting the given sign bit.
+    /// Marks an entity as present in a child subtree by setting a bit in its `BitSet`.
     ///
     /// # Safety
-    /// - `sign` must be in `0..Self::ORDER`.
+    ///
+    /// - `sign` must be in the range `0..Self::ORDER`.
     #[inline]
     unsafe fn insert_sign(&mut self, entity: E, sign: usize) {
         debug_assert!(sign < Self::ORDER);
@@ -128,10 +127,11 @@ impl<E: Entity> ComponentNode<E> {
         }
     }
 
-    /// Clears presence of the entity from a specific child subtree.
+    /// Clears an entity's presence from a child subtree by unsetting a bit in its `BitSet`.
     ///
     /// # Safety
-    /// - `sign` must be in `0..Self::ORDER`.
+    ///
+    /// - `sign` must be in the range `0..Self::ORDER`.
     #[inline]
     unsafe fn remove_sign(&mut self, entity: E, sign: usize) {
         debug_assert!(sign < Self::ORDER);
@@ -142,187 +142,199 @@ impl<E: Entity> ComponentNode<E> {
     }
 }
 
-/// Core storage implementation of the entity-component system, handling only type-erased data.
+/// Internal ECS world implementation handling type-erased data.
 ///
-/// `RawWorld` maintains:
+/// Manages:
 /// - Entity ID allocation and reuse.
-/// - The component tree structure.
-/// - Binding/unbinding components to entities at low-level.
+/// - A tree of component storages.
+/// - Low-level component binding and unbinding.
 ///
-/// This layer has no knowledge of concrete component types.
-struct RawWorld<E: Entity> {
-    /// Type-erased complete tree of component storages.
-    components: Vec<ComponentNode<E>>,
+/// This struct operates on type-erased data, unaware of specific component types.
+macro_rules! impl_raw_world {
+    ($t: ident, $e: ty, $reg: ident) => {
+        static $reg: OnceLock<RwLock<ComponentRegistry<$e>>> = OnceLock::new();
 
-    /// Next available entity id for allocation.
-    next_entity_id: Option<E::Id>,
+        struct $t {
+            /// Vector of component nodes forming the complete tree of storages.
+            components: Vec<ComponentNode<$e>>,
+            /// Next entity ID to allocate, if available.
+            next_entity_id: Option<<$e as Entity>::Id>,
+            /// Pool of reusable entity IDs from removed entities.
+            removed_entities: Vec<$e>,
+        }
 
-    /// Pool of previously removed entity ids for reuse.
-    removed_entities: Vec<E>,
+        impl Default for $t {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl $t {
+            /// Branching factor of the component tree.
+            const ORDER: usize = ComponentNode::<$e>::ORDER;
+
+            /// Retrieves or initializes the global component registry.
+            fn get_registry() -> &'static RwLock<ComponentRegistry<$e>> {
+                $reg.get_or_init(|| RwLock::new(ComponentRegistry::new()))
+            }
+
+            /// Registers a component storage constructor, returning its handle.
+            ///
+            /// # Safety
+            ///
+            /// - Caller must ensure the constructor is valid and unique registration is safe.
+            unsafe fn register(constructor: ComponentStorageConstructor<$e>) -> ComponentHandle {
+                unsafe { Self::get_registry().write().unwrap().register(constructor) }
+            }
+
+            /// Gets a reference to the component node for a handle, extending the tree if needed.
+            fn get_node(&mut self, handle: ComponentHandle) -> &ComponentNode<$e> {
+                let index = handle.index();
+
+                if index >= self.components.len() {
+                    let registry = Self::get_registry().read().unwrap();
+                    let mut additional_nodes = Vec::new();
+                    for constructor in registry.iter().skip(self.components.len()) {
+                        additional_nodes.push(ComponentNode::new(constructor()));
+                    }
+                    self.components.extend(additional_nodes);
+                }
+
+                debug_assert!(index < self.components.len());
+                unsafe { self.components.get_unchecked(index) }
+            }
+
+            /// Gets a mutable reference to the component node for a handle, extending the tree if needed.
+            fn get_node_mut(&mut self, handle: ComponentHandle) -> &mut ComponentNode<$e> {
+                let index = handle.index();
+
+                if index >= self.components.len() {
+                    let registry = Self::get_registry().read().unwrap();
+                    let mut additional_nodes = Vec::new();
+                    for constructor in registry.iter().skip(self.components.len()) {
+                        additional_nodes.push(ComponentNode::new(constructor()));
+                    }
+                    self.components.extend(additional_nodes);
+                }
+
+                debug_assert!(index < self.components.len());
+                unsafe { self.components.get_unchecked_mut(index) }
+            }
+
+            /// Creates a new, empty ECS world.
+            #[inline]
+            fn new() -> Self {
+                Self {
+                    components: Vec::new(),
+                    next_entity_id: Some(<<$e as Entity>::Id as EntityId>::MIN),
+                    removed_entities: Vec::new(),
+                }
+            }
+
+            /// Allocates a new entity, reusing IDs if available or generating a new one.
+            ///
+            /// Returns `Some(entity)` on success, `None` if the ID pool is exhausted.
+            fn new_entity(&mut self) -> Option<$e> {
+                if let Some(entity) = self.removed_entities.pop() {
+                    return Some(entity.next_ver());
+                }
+
+                self.next_entity_id.map(|now| {
+                    let entity = <$e>::new(now);
+                    self.next_entity_id = now.next();
+                    entity
+                })
+            }
+
+            /// Recursively removes all components for an entity from the tree.
+            fn remove_entity_helper(&mut self, entity: $e, root: usize) {
+                if root >= self.components.len() {
+                    return;
+                }
+
+                let component_node = unsafe { self.components.get_unchecked_mut(root) };
+                component_node.remove_without_value(entity);
+
+                let subtrees = component_node.bit_signs.remove(entity);
+                if let Some(subtrees) = subtrees {
+                    for subtree in subtrees.iter() {
+                        let next = root * Self::ORDER + subtree + 1;
+                        self.remove_entity_helper(entity, next);
+                    }
+                }
+            }
+
+            /// Removes an entity and all its components, recycling its ID.
+            #[inline]
+            fn remove_entity(&mut self, entity: $e) {
+                self.removed_entities.push(entity);
+                self.remove_entity_helper(entity, 0);
+            }
+
+            /// Binds a component to an entity, updating the tree structure.
+            ///
+            /// # Safety
+            ///
+            /// - `value` must point to a valid component instance.
+            /// - `old_value` must point to uninitialized memory for the previous value.
+            #[inline]
+            unsafe fn bind_component(
+                &mut self,
+                entity: $e,
+                component_handle: ComponentHandle,
+                value: ComponentPtr,
+                old_value: UninitializedComponent,
+            ) {
+                let component_node = self.get_node_mut(component_handle);
+
+                unsafe {
+                    component_node.insert(entity, value, old_value);
+                }
+
+                // Propagate bit signs up the tree
+                let mut now = component_handle.index();
+                while now > 0 {
+                    let parent_index = (now - 1) / Self::ORDER;
+                    let subtree_index = (now - 1) % Self::ORDER;
+
+                    let parent_node = unsafe { self.components.get_unchecked_mut(parent_index) };
+                    unsafe {
+                        parent_node.insert_sign(entity, subtree_index);
+                    }
+
+                    now = parent_index;
+                }
+            }
+
+            /// Unbinds a component from an entity, leaving bit signs unchanged.
+            ///
+            /// # Safety
+            ///
+            /// - `old_value` must point to uninitialized memory for the removed value.
+            #[inline]
+            unsafe fn unbind_component(
+                &mut self,
+                entity: $e,
+                component_handle: ComponentHandle,
+                old_value: UninitializedComponent,
+            ) {
+                let component_node = self.get_node_mut(component_handle);
+
+                unsafe {
+                    component_node.remove(entity, old_value);
+                }
+            }
+        }
+    };
 }
 
-impl<E: Entity> Default for RawWorld<E>
-where
-    E: EntityInternal,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[cfg(target_pointer_width = "64")]
+impl_raw_world!(RawWorld64, Entity64, __REGISTRY64);
 
-impl<E: Entity> RawWorld<E>
-where
-    E: EntityInternal,
-{
-    /// The branching factor of the tree.
-    const ORDER: usize = ComponentNode::<E>::ORDER;
+#[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+impl_raw_world!(RawWorld32, Entity32, __REGISTRY32);
 
-    /// Constructs a new empty world.
-    #[inline]
-    fn new() -> Self {
-        Self {
-            components: Vec::new(),
-            next_entity_id: Some(<E::Id as EntityId>::MIN),
-            removed_entities: Vec::new(),
-        }
-    }
-
-    /// Returns true if the component type has been registered.
-    #[inline]
-    fn is_registered(&self, component_handle: ComponentHandle) -> bool {
-        match self.components.get(component_handle.index()) {
-            None => false,
-            Some(node) => node.entry.is_some(),
-        }
-    }
-
-    /// Registers (or replaces) a component entry for the specified handle, returning any previous entry.
-    #[inline]
-    fn register_component(
-        &mut self,
-        component_handle: ComponentHandle,
-        entry: Box<dyn ComponentEntry<E>>,
-    ) -> Option<Box<dyn ComponentEntry<E>>> {
-        let component_index = component_handle.index();
-        let new_node = ComponentNode::new(Some(entry));
-
-        match self.components.get_mut(component_index) {
-            None => {
-                // If the index is out of bounds, we need to grow the components vector.
-
-                // Resize the vector up to component_index (exclusive), filling with default ComponentNodes.
-                self.components
-                    .resize_with(component_index, || ComponentNode::default());
-
-                // After resize, append the new node to occupy the exact component_index slot.
-                self.components.push(new_node);
-
-                // No previous entry existed at this index, return None.
-                None
-            }
-            Some(target) => {
-                // The index is within bounds; replace the existing node with the new one.
-                let old_node = replace(target, new_node);
-
-                // Return the previous entry (if any).
-                old_node.entry
-            }
-        }
-    }
-
-    /// Allocates a new entity.
-    ///
-    /// Reuses recycled IDs first, then allocates sequentially.
-    fn new_entity(&mut self) -> Option<E> {
-        if let Some(entity) = self.removed_entities.pop() {
-            return Some(entity.next_ver());
-        }
-
-        self.next_entity_id.map(|now| {
-            let entity = E::new(now);
-            self.next_entity_id = now.next();
-            entity
-        })
-    }
-
-    /// Internal recursive helper to remove all components for the entity.
-    fn remove_entity_helper(&mut self, entity: E, root: usize) {
-        if root >= self.components.len() {
-            return;
-        }
-
-        let component_node = unsafe { self.components.get_unchecked_mut(root) };
-        component_node.remove_without_value(entity);
-
-        let subtrees = component_node.bit_signs.remove(entity);
-        if let Some(subtrees) = subtrees {
-            for subtree in subtrees.iter() {
-                let next = root * Self::ORDER + subtree + 1;
-                self.remove_entity_helper(entity, next);
-            }
-        }
-    }
-
-    /// Removes an entity entirely from the world.
-    #[inline]
-    fn remove_entity(&mut self, entity: E) {
-        self.removed_entities.push(entity);
-        self.remove_entity_helper(entity, 0);
-    }
-
-    /// Binds a component instance to an entity.
-    ///
-    /// Inserts value and updates tree upwards to track which branches are active.
-    #[inline]
-    unsafe fn bind_component(
-        &mut self,
-        entity: E,
-        component_handle: ComponentHandle,
-        value: ComponentPtr,
-        old_value: UninitializedComponent,
-    ) {
-        debug_assert!(component_handle.index() < self.components.len());
-        let component_index = component_handle.index();
-        let component_node = unsafe { self.components.get_unchecked_mut(component_index) };
-
-        unsafe {
-            component_node.insert(entity, value, old_value);
-        }
-
-        // Propagate bit signs up the tree
-        let mut now = component_index;
-        while now > 0 {
-            let parent_index = (now - 1) / Self::ORDER;
-            let subtree_index = (now - 1) % Self::ORDER;
-
-            let parent_node = unsafe { self.components.get_unchecked_mut(parent_index) };
-            unsafe {
-                parent_node.insert_sign(entity, subtree_index);
-            }
-
-            now = parent_index;
-        }
-    }
-
-    /// Unbinds component instance from entity without updating bit signs.
-    ///
-    /// This leaves stale bits which can be cleaned lazily or ignored.
-    #[inline]
-    unsafe fn unbind_component(
-        &mut self,
-        entity: E,
-        component_handle: ComponentHandle,
-        old_value: UninitializedComponent,
-    ) {
-        debug_assert!(component_handle.index() < self.components.len());
-        let component_index = component_handle.index();
-        let component_node = unsafe { self.components.get_unchecked_mut(component_index) };
-
-        unsafe {
-            component_node.remove(entity, old_value);
-        }
-    }
-}
+impl_raw_world!(RawWorld16, Entity16, __REGISTRY16);
 
 #[cfg(test)]
 mod raw_world_tests {
@@ -333,12 +345,10 @@ mod raw_world_tests {
 
     #[test]
     fn test_raw_world_insert_and_remove() {
-        let mut world = RawWorld::<Entity32>::new();
-
-        // Register component storage
-        let storage = ComponentStorage::<Entity32, i32>::new();
-        let handle = ComponentHandle::new(0);
-        world.register_component(handle, Box::new(storage));
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = RawWorld32::new();
+        let handle =
+            unsafe { RawWorld32::register(|| Box::new(ComponentStorage::<Entity32, i32>::new())) };
 
         // Allocate entity
         let entity = world.new_entity().unwrap();
@@ -381,23 +391,12 @@ mod raw_world_tests {
 
     #[test]
     fn test_multiple_components_and_entities() {
-        let mut world = RawWorld::<Entity32>::new();
-
-        let storage_a = ComponentStorage::<Entity32, i32>::new();
-        let storage_b = ComponentStorage::<Entity32, u64>::new();
-
-        let handle_a = ComponentHandle::new(1);
-        let handle_b = ComponentHandle::new(10);
-        assert!(
-            world
-                .register_component(handle_a, Box::new(storage_a))
-                .is_none()
-        );
-        assert!(
-            world
-                .register_component(handle_b, Box::new(storage_b))
-                .is_none()
-        );
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = RawWorld32::new();
+        let handle_a =
+            unsafe { RawWorld32::register(|| Box::new(ComponentStorage::<Entity32, i32>::new())) };
+        let handle_b =
+            unsafe { RawWorld32::register(|| Box::new(ComponentStorage::<Entity32, u64>::new())) };
 
         let entity1 = world.new_entity().unwrap();
         let entity2 = world.new_entity().unwrap();
@@ -454,14 +453,15 @@ mod raw_world_tests {
     #[test]
     fn test_raw_world_deep_tree_stress() {
         const COMPONENT_COUNT: usize = 1024; // Ensure deep multi-level tree structure
-        let mut world = RawWorld::<Entity32>::new();
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = RawWorld32::new();
 
         // Dynamically register a large number of components
         let mut handles = Vec::new();
-        for i in 0..COMPONENT_COUNT {
-            let storage = ComponentStorage::<Entity32, usize>::new();
-            let handle = ComponentHandle::new(i);
-            world.register_component(handle, Box::new(storage));
+        for _ in 0..COMPONENT_COUNT {
+            let handle = unsafe {
+                RawWorld32::register(|| Box::new(ComponentStorage::<Entity32, usize>::new()))
+            };
             handles.push(handle);
         }
 
@@ -516,126 +516,160 @@ mod raw_world_tests {
     }
 }
 
-/// Represents the ECS world, managing entities and their components.
+/// Public ECS world interface for managing entities and components.
 ///
-/// The generic parameter `E` must implement the public `Entity` trait.
-///
-/// Note: Although `Entity` is publicly implementable, only the built-in entity types
-/// (`Entity16`, `Entity32`, `Entity64`) also implement the private `EntityInternal` trait.
-/// This means that only these types can be used with `World` to access its full functionality.
-pub struct World<E: Entity> {
-    raw: RawWorld<E>,
+/// Provides type-safe methods for entity and component management, wrapping a `RawWorld`.
+macro_rules! impl_world {
+    ($t: ident, $r: ty, $e: ty) => {
+        /// The ECS world, managing entities and their components.
+        pub struct $t {
+            raw: $r,
+        }
+
+        impl Default for $t {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl $t {
+            /// Registers a component type for use in this world.
+            ///
+            /// Must be called exactly once for a given component type before binding any components of that type.
+            ///
+            /// # Safety
+            ///
+            /// - Caller must ensure the component type’s handle is set correctly and safely.
+            /// - This method must be called exactly once for the component type `T` before any components of type `T` are inserted using `bind_component`.
+            #[inline]
+            unsafe fn register<T: Component>() {
+                let handle = unsafe { <$r>::register(|| Box::new(ComponentStorage::<$e, T>::new()) ) };
+                unsafe { T::set_handle(handle) };
+                debug_assert!(unsafe { T::handle() } == handle);
+            }
+
+            /// Creates a new, empty ECS world.
+            #[inline]
+            pub fn new() -> Self {
+                Self {
+                    raw: <$r>::new(),
+                }
+            }
+
+            /// Allocates a new entity.
+            ///
+            /// Returns `Some(entity)` on success, `None` if the entity pool is exhausted.
+            #[inline]
+            pub fn new_entity(&mut self) -> Option<$e> {
+                self.raw.new_entity()
+            }
+
+            /// Removes an entity and all its associated components.
+            #[inline]
+            pub fn remove_entity(&mut self, entity: $e) {
+                self.raw.remove_entity(entity);
+            }
+
+            /// Binds a component of type `T` to an entity.
+            ///
+            /// If a component of type `T` already exists, it is replaced and returned.
+            pub fn bind_component<T: Component>(&mut self, entity: $e, value: T) -> Option<T> {
+                let handle = unsafe { T::handle() };
+
+                let mut old_value = MaybeUninit::<Option<T>>::uninit();
+                unsafe {
+                    self.raw.bind_component(
+                        entity,
+                        handle,
+                        &value as *const T as ComponentPtr,
+                        old_value.as_mut_ptr() as UninitializedComponent,
+                    );
+                    old_value.assume_init()
+                }
+            }
+
+            /// Unbinds and removes a component of type `T` from an entity.
+            ///
+            /// Returns the removed component if it existed, otherwise `None`.
+            pub fn unbind_component<T: Component>(&mut self, entity: $e) -> Option<T> {
+                let handle = unsafe { T::handle() };
+
+                let mut old_value = MaybeUninit::<Option<T>>::uninit();
+                unsafe {
+                    self.raw.unbind_component(
+                        entity,
+                        handle,
+                        old_value.as_mut_ptr() as UninitializedComponent,
+                    );
+                    old_value.assume_init()
+                }
+            }
+        }
+    };
 }
 
-impl<E: Entity> Default for World<E>
-where
-    E: EntityInternal,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[cfg(target_pointer_width = "64")]
+impl_world!(World64, RawWorld64, Entity64);
 
-/// A container for managing entities and components.
+#[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+impl_world!(World32, RawWorld32, Entity32);
+
+impl_world!(World16, RawWorld16, Entity16);
+
+/// Alias for the default world type based on the target platform.
 ///
-/// Each `World` owns a set of entities and their associated components.
-/// Components are automatically registered upon first use.
-#[allow(private_bounds)]
-impl<E: Entity> World<E>
-where
-    E: EntityInternal,
-{
-    /// Creates a new empty world.
-    #[inline]
-    pub fn new() -> Self {
-        Self {
-            raw: RawWorld::new(),
-        }
-    }
+/// - 64-bit: `World32`
+/// - 32-bit: `World32`
+/// - 16-bit: `World16`
+///
+/// `World64` is available on 64-bit platforms but not used by default due to its larger size.
+#[cfg(target_pointer_width = "64")]
+pub type DefaultWorld = World32;
 
-    /// Allocates a new entity.
-    ///
-    /// Returns `Some(entity)` if successful, or `None` if the entity pool is exhausted.
-    #[inline]
-    pub fn new_entity(&mut self) -> Option<E> {
-        self.raw.new_entity()
-    }
+#[cfg(target_pointer_width = "32")]
+pub type DefaultWorld = World32;
 
-    /// Removes an existing entity and all its associated components.
-    #[inline]
-    pub fn remove_entity(&mut self, entity: E) {
-        self.raw.remove_entity(entity);
-    }
-
-    /// Lazily registers the component type `T` if it hasn't been registered yet.
-    ///
-    /// Returns the corresponding `ComponentHandle`.
-    #[inline]
-    fn try_register<T: Component>(&mut self) -> ComponentHandle {
-        let handle = T::handle();
-        if !self.raw.is_registered(handle) {
-            let entry = Box::new(ComponentStorage::<E, T>::new());
-            self.raw.register_component(handle, entry);
-        }
-        handle
-    }
-
-    /// Binds a component instance of type `T` to the given entity.
-    ///
-    /// If the entity already has a component of type `T`, it will be replaced and returned.
-    pub fn bind_component<T: Component>(&mut self, entity: E, value: T) -> Option<T> {
-        let handle = self.try_register::<T>();
-
-        let mut old_value = MaybeUninit::<Option<T>>::uninit();
-        unsafe {
-            self.raw.bind_component(
-                entity,
-                handle,
-                &value as *const T as ComponentPtr,
-                old_value.as_mut_ptr() as UninitializedComponent,
-            );
-            old_value.assume_init()
-        }
-    }
-
-    /// Unbinds and removes a component of type `T` from the given entity.
-    ///
-    /// Returns the removed component if it existed.
-    pub fn unbind_component<T: Component>(&mut self, entity: E) -> Option<T> {
-        let handle = self.try_register::<T>();
-
-        let mut old_value = MaybeUninit::<Option<T>>::uninit();
-        unsafe {
-            self.raw.unbind_component(
-                entity,
-                handle,
-                old_value.as_mut_ptr() as UninitializedComponent,
-            );
-            old_value.assume_init()
-        }
-    }
-}
+#[cfg(target_pointer_width = "16")]
+pub type DefaultWorld = World16;
 
 #[cfg(test)]
 mod world_tests {
     use super::*;
-    use crate::entity::Entity32;
-
     #[derive(Debug, PartialEq)]
     struct Position(i32, i32);
 
-    impl Component for Position {}
+    static __HANDLE_POSITION: OnceLock<ComponentHandle> = OnceLock::new();
+
+    unsafe impl Component for Position {
+        unsafe fn set_handle(handle: ComponentHandle) {
+            __HANDLE_POSITION
+                .set(handle)
+                .expect("Handle has already been set");
+        }
+
+        unsafe fn handle() -> ComponentHandle {
+            *__HANDLE_POSITION.get().expect("Handle not initialized")
+        }
+    }
 
     #[test]
     fn test_entity_creation_and_removal() {
-        let mut world = World::<Entity32>::new();
+        let mut world = World32::new();
         let entity = world.new_entity().expect("Failed to create entity");
         world.remove_entity(entity);
+        let recyled_entity = world.new_entity().unwrap();
+        assert_ne!(entity, recyled_entity);
+        assert_eq!(entity.id(), recyled_entity.id());
+        assert_ne!(entity.ver(), recyled_entity.ver());
     }
 
     #[test]
     fn test_bind_and_unbind_component() {
-        let mut world = World::<Entity32>::new();
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = World32::new();
+        unsafe {
+            World32::register::<Position>();
+        }
         let entity = world.new_entity().expect("Failed to create entity");
 
         // Bind component

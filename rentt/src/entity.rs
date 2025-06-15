@@ -79,25 +79,6 @@ pub trait Entity: Copy + Clone + PartialEq + Eq + 'static {
     fn ver(&self) -> Self::Ver;
 }
 
-/// Internal trait extending `Entity` with entity construction and version management methods.
-///
-/// This trait is crate-private and intended for internal use only, hiding implementation details from public API.
-///
-/// It provides methods to:
-/// - Create new entities with a default version.
-/// - Construct entities from explicit ID and version.
-/// - Advance the entity version.
-pub(crate) trait EntityInternal: Entity {
-    /// Creates a new entity with the given ID and the minimum version.
-    fn new(id: Self::Id) -> Self;
-
-    /// Creates an entity from explicit ID and version.
-    fn combine(id: Self::Id, ver: Self::Ver) -> Self;
-
-    /// Returns a new entity with the same ID and the next version.
-    fn next_ver(self) -> Self;
-}
-
 /// Macro to implement a concrete entity type with compact ID and version packing.
 ///
 /// This macro generates:
@@ -136,25 +117,28 @@ macro_rules! impl_entity {
             }
         }
 
-        impl EntityInternal for $t {
+        impl $t {
+            /// Creates a new entity with the given ID and the minimum version.
             #[inline]
-            fn new(id: Self::Id) -> Self {
-                Self::combine(id, Self::Ver::MIN)
+            pub(crate) fn new(id: <Self as Entity>::Id) -> Self {
+                Self::combine(id, <Self as Entity>::Ver::MIN)
             }
 
+            /// Creates an entity from explicit ID and version.
             #[inline]
-            fn combine(id: Self::Id, ver: Self::Ver) -> Self {
+            pub(crate) fn combine(id: <Self as Entity>::Id, ver: <Self as Entity>::Ver) -> Self {
                 let id = id.get();
-                let ver = ver.get() as <Self::Id as EntityId>::Base;
-                let raw = (ver << Self::Id::BITS) | id;
+                let ver = ver.get() as <<Self as Entity>::Id as EntityId>::Base;
+                let raw = (ver << <Self as Entity>::Id::BITS) | id;
                 debug_assert!(raw != 0);
                 Self {
                     raw: unsafe { <$r>::new_unchecked(raw) },
                 }
             }
 
+            /// Returns a new entity with the same ID and the next version.
             #[inline]
-            fn next_ver(self) -> Self {
+            pub(crate) fn next_ver(self) -> Self {
                 Self::combine(self.id(), self.ver().next())
             }
         }

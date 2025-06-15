@@ -602,7 +602,7 @@ impl<E: Entity, T> EntityMap<E, T> {
 #[cfg(test)]
 mod entity_map_tests {
     use super::*;
-    use crate::entity::{Entity32, EntityInternal};
+    use crate::entity::Entity32;
     use crate::entity_fields::Id24;
 
     fn id(n: u32) -> Id24 {
