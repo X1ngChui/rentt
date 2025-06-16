@@ -28,8 +28,8 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::bit_set::BitSet;
 use crate::component::{
-    Component, ComponentEntry, ComponentHandle, ComponentPtr, ComponentRegistry, ComponentStorage,
-    ComponentStorageConstructor, UninitializedComponent,
+    Component, ComponentEntry, ComponentHandle, ComponentPtr, ComponentPtrMut, ComponentRegistry,
+    ComponentStorage, ComponentStorageConstructor, UninitializedComponent,
 };
 use crate::entity::{Entity, Entity16, Entity32, Entity64};
 use crate::entity_fields::EntityId;
@@ -140,6 +140,43 @@ impl<E: Entity> ComponentNode<E> {
             unsafe { signs.remove(sign) };
         }
     }
+
+    /// Returns the number of entities currently holding this component.
+    #[inline]
+    fn len(&self) -> usize {
+        self.entry.len()
+    }
+
+    /// Returns an iterator over all components stored directly in this node.
+    ///
+    /// This iterator yields `(entity, component_ptr)` pairs for all entities that have
+    /// components stored at the current level of the tree.
+    ///
+    /// # Returns
+    ///
+    /// A boxed iterator yielding:
+    /// - `E`: The entity identifier.
+    /// - `ComponentPtr`: A type-erased immutable pointer to the component data.
+    #[inline]
+    fn iter(&self) -> Box<dyn Iterator<Item = (E, ComponentPtr)> + '_> {
+        self.entry.iter()
+    }
+
+    /// Returns a mutable iterator over all components stored directly in this node.
+    ///
+    /// This iterator yields `(entity, component_ptr_mut)` pairs for all entities that have
+    /// components stored at the current level of the tree, allowing in-place modification
+    /// of the component data.
+    ///
+    /// # Returns
+    ///
+    /// A boxed iterator yielding:
+    /// - `E`: The entity identifier.
+    /// - `ComponentPtrMut`: A type-erased mutable pointer to the component data.
+    #[inline]
+    fn iter_mut(&mut self) -> Box<dyn Iterator<Item = (E, ComponentPtrMut)> + '_> {
+        self.entry.iter_mut()
+    }
 }
 
 /// Internal ECS world implementation handling type-erased data.
@@ -154,7 +191,8 @@ macro_rules! impl_raw_world {
     ($t: ident, $e: ty, $reg: ident) => {
         static $reg: OnceLock<RwLock<ComponentRegistry<$e>>> = OnceLock::new();
 
-        struct $t {
+        /// Internal ECS world implementation handling type-erased data.
+        pub struct $t {
             /// Vector of component nodes forming the complete tree of storages.
             components: Vec<ComponentNode<$e>>,
             /// Next entity ID to allocate, if available.
@@ -183,7 +221,7 @@ macro_rules! impl_raw_world {
             /// # Safety
             ///
             /// - Caller must ensure the constructor is valid and unique registration is safe.
-            unsafe fn register(constructor: ComponentStorageConstructor<$e>) -> ComponentHandle {
+            pub unsafe fn register(constructor: ComponentStorageConstructor<$e>) -> ComponentHandle {
                 unsafe { Self::get_registry().write().unwrap().register(constructor) }
             }
 
@@ -223,7 +261,7 @@ macro_rules! impl_raw_world {
 
             /// Creates a new, empty ECS world.
             #[inline]
-            fn new() -> Self {
+            pub fn new() -> Self {
                 Self {
                     components: Vec::new(),
                     next_entity_id: Some(<<$e as Entity>::Id as EntityId>::MIN),
@@ -234,7 +272,7 @@ macro_rules! impl_raw_world {
             /// Allocates a new entity, reusing IDs if available or generating a new one.
             ///
             /// Returns `Some(entity)` on success, `None` if the ID pool is exhausted.
-            fn new_entity(&mut self) -> Option<$e> {
+            pub fn new_entity(&mut self) -> Option<$e> {
                 if let Some(entity) = self.removed_entities.pop() {
                     return Some(entity.next_ver());
                 }
@@ -266,7 +304,7 @@ macro_rules! impl_raw_world {
 
             /// Removes an entity and all its components, recycling its ID.
             #[inline]
-            fn remove_entity(&mut self, entity: $e) {
+            pub fn remove_entity(&mut self, entity: $e) {
                 self.removed_entities.push(entity);
                 self.remove_entity_helper(entity, 0);
             }
@@ -278,7 +316,7 @@ macro_rules! impl_raw_world {
             /// - `value` must point to a valid component instance.
             /// - `old_value` must point to uninitialized memory for the previous value.
             #[inline]
-            unsafe fn bind_component(
+            pub unsafe fn bind_component(
                 &mut self,
                 entity: $e,
                 component_handle: ComponentHandle,
@@ -312,7 +350,7 @@ macro_rules! impl_raw_world {
             ///
             /// - `old_value` must point to uninitialized memory for the removed value.
             #[inline]
-            unsafe fn unbind_component(
+            pub unsafe fn unbind_component(
                 &mut self,
                 entity: $e,
                 component_handle: ComponentHandle,
@@ -323,6 +361,67 @@ macro_rules! impl_raw_world {
                 unsafe {
                     component_node.remove(entity, old_value);
                 }
+            }
+
+            /// Returns the number of entities currently holding this component.
+            #[inline]
+            fn len(&mut self, handle: ComponentHandle) -> usize {
+                let component_node = self.get_node(handle);
+                component_node.len()
+            }
+
+            /// Returns an iterator over all components of a specific type.
+            ///
+            /// This method provides type-erased, immutable access to all components bound
+            /// to entities for the given `component_handle`. It only iterates over components
+            /// stored directly at the storage node corresponding to the handle.
+            ///
+            /// # Parameters
+            ///
+            /// - `handle`: The component handle obtained during registration.
+            ///
+            /// # Returns
+            ///
+            /// A boxed iterator yielding `(entity, component_ptr)` pairs, where:
+            /// - `entity` is the entity ID.
+            /// - `component_ptr` is a type-erased immutable pointer to the component data.
+            ///
+            /// # Notes
+            ///
+            /// - The iteration order is not specified and should not be relied upon.
+            /// - Returned `ComponentPtr` must be safely cast to the actual component type
+            ///   by the caller.
+            #[inline]
+            pub fn iter(&mut self, handle: ComponentHandle) -> Box<dyn Iterator<Item = ($e, ComponentPtr)> + '_> {
+                let component_node = self.get_node(handle);
+                component_node.iter()
+            }
+
+            /// Returns a mutable iterator over all components of a specific type.
+            ///
+            /// This method provides type-erased, mutable access to all components bound
+            /// to entities for the given `component_handle`. It allows in-place modification
+            /// of component values.
+            ///
+            /// # Parameters
+            ///
+            /// - `handle`: The component handle obtained during registration.
+            ///
+            /// # Returns
+            ///
+            /// A boxed iterator yielding `(entity, component_ptr_mut)` pairs, where:
+            /// - `entity` is the entity ID.
+            /// - `component_ptr_mut` is a type-erased mutable pointer to the component data.
+            ///
+            /// # Safety Notes
+            ///
+            /// - The iteration order is not specified and should not be relied upon.
+            /// - Returned `ComponentPtrMut` must be safely cast to the actual component type
+            ///   by the caller.
+            #[inline]
+            pub fn iter_mut(&mut self, handle: ComponentHandle) -> Box<dyn Iterator<Item = ($e, ComponentPtrMut)> + '_> {
+                let component_node = self.get_node_mut(handle);
+                component_node.iter_mut()
             }
         }
     };
@@ -604,6 +703,56 @@ macro_rules! impl_world {
                     old_value.assume_init()
                 }
             }
+
+            /// Returns the number of entities currently holding this component.
+            #[inline]
+            pub fn len<T: Component>(&mut self) -> usize {
+                let handle = unsafe { T::handle() };
+                self.raw.len(handle)
+            }
+
+            /// Returns an iterator over all components of type `T`.
+            ///
+            /// Yields `(entity, &T)` pairs for every entity that has a component of type `T` bound.
+            ///
+            /// # Safety
+            ///
+            /// This method internally performs type-erased pointer casting. Safety relies on:
+            /// - The `register::<T>()` function being correctly called exactly once before use.
+            ///
+            /// # Notes
+            ///
+            /// - The iteration order is not specified and should not be relied upon.
+            #[inline]
+            pub fn iter<T: Component>(&mut self) -> impl Iterator<Item = ($e, &T)> {
+                let handle = unsafe { T::handle() };
+                self.raw.iter(handle).map(|(e, p)| {
+                    let pv = p as *const T;
+                    (e, unsafe { &*pv })
+                })
+            }
+
+            /// Returns a mutable iterator over all components of type `T`.
+            ///
+            /// Yields `(entity, &mut T)` pairs for every entity that has a component of type `T` bound,
+            /// allowing in-place modification of the components.
+            ///
+            /// # Safety
+            ///
+            /// This method internally performs type-erased mutable pointer casting. Safety relies on:
+            /// - The `register::<T>()` function being correctly called exactly once before use.
+            ///
+            /// # Notes
+            ///
+            /// - The iteration order is not specified and should not be relied upon.
+            #[inline]
+            pub fn iter_mut<T: Component>(&mut self) -> impl Iterator<Item = ($e, &mut T)> {
+                let handle = unsafe { T::handle() };
+                self.raw.iter_mut(handle).map(|(e, p)| {
+                    let pv = p as *mut T;
+                    (e, unsafe { &mut *pv })
+                })
+            }
         }
     };
 }
@@ -634,21 +783,22 @@ pub type DefaultWorld = World16;
 
 #[cfg(test)]
 mod world_tests {
+    use std::collections::HashSet;
+
     use super::*;
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct Position(i32, i32);
 
-    static __HANDLE_POSITION: OnceLock<ComponentHandle> = OnceLock::new();
+    static mut __HANDLE_POSITION: MaybeUninit<ComponentHandle> = MaybeUninit::uninit();
 
     unsafe impl Component for Position {
+        #[allow(static_mut_refs)]
         unsafe fn set_handle(handle: ComponentHandle) {
-            __HANDLE_POSITION
-                .set(handle)
-                .expect("Handle has already been set");
+            unsafe { __HANDLE_POSITION.write(handle) };
         }
 
         unsafe fn handle() -> ComponentHandle {
-            *__HANDLE_POSITION.get().expect("Handle not initialized")
+            unsafe { __HANDLE_POSITION.assume_init() }
         }
     }
 
@@ -687,5 +837,61 @@ mod world_tests {
         // Unbind again (should be None)
         let removed_again = world.unbind_component::<Position>(entity);
         assert!(removed_again.is_none());
+    }
+
+    #[test]
+    fn test_iter() {
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = World32::new();
+        unsafe {
+            World32::register::<Position>();
+        }
+
+        const POSITION_COUNT: usize = 1024;
+        let mut expected = HashSet::new();
+        for i in 0..POSITION_COUNT {
+            let entity = world.new_entity().unwrap();
+            let pos = Position(i as i32, (i * 2) as i32);
+            world.bind_component(entity, pos);
+            expected.insert((entity, pos));
+        }
+        assert_eq!(world.len::<Position>(), POSITION_COUNT);
+
+        let result: HashSet<_> = world.iter::<Position>().map(|(e, p)| (e, *p)).collect();
+
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn test_iter_mut() {
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = World32::new();
+        unsafe {
+            World32::register::<Position>();
+        }
+
+        const POSITION_COUNT: usize = 1024;
+        let mut initial = HashSet::new();
+        for i in 0..POSITION_COUNT {
+            let entity = world.new_entity().unwrap();
+            let pos = Position(i as i32, (i * 2) as i32);
+            world.bind_component(entity, pos);
+            initial.insert((entity, pos));
+        }
+        assert_eq!(world.len::<Position>(), POSITION_COUNT);
+
+        for (_entity, pos) in world.iter_mut::<Position>() {
+            pos.0 += 1;
+            pos.1 += 1;
+        }
+
+        let expected: HashSet<_> = initial
+            .into_iter()
+            .map(|(e, Position(x, y))| (e, Position(x + 1, y + 1)))
+            .collect();
+
+        let result: HashSet<_> = world.iter::<Position>().map(|(e, p)| (e, *p)).collect();
+
+        assert_eq!(expected, result);
     }
 }

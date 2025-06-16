@@ -59,14 +59,17 @@
 //! `Entity64` is excluded from the default alias due to its large size, but can be opted-in explicitly if needed.
 
 use crate::entity_fields::{EntityId, EntityVer, Id12, Id24, Id48, Ver4, Ver8, Ver16};
-use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+use std::{
+    hash::Hash,
+    num::{NonZeroU16, NonZeroU32, NonZeroU64},
+};
 
 /// Public trait representing a strongly typed ECS entity handle.
 ///
 /// Provides read-only access to entity ID and version.
 ///
 /// Implementations should pack ID and version compactly but expose only safe, immutable accessors.
-pub trait Entity: Copy + Clone + PartialEq + Eq + 'static {
+pub trait Entity: Copy + Clone + PartialEq + Eq + Hash + 'static {
     /// The ID type used by this entity.
     type Id: EntityId;
     /// The version type used by this entity.
@@ -95,7 +98,7 @@ pub trait Entity: Copy + Clone + PartialEq + Eq + 'static {
 macro_rules! impl_entity {
     ($t:ident, $r:ty, $id:ty, $ver:ty, $doc: literal) => {
         #[doc = $doc]
-        #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
         pub struct $t {
             raw: $r,
         }
