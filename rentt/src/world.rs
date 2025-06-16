@@ -9,11 +9,11 @@
 //!
 //! ## Available World Types
 //!
-//! | World Type | Entity Type | Max Live Entities   | Platforms      |
-//! | ---------- | ----------- | ------------------- | -------------- |
-//! | `World16`  | `Entity16`  | 4,096               | All platforms  |
-//! | `World32`  | `Entity32`  | 16,777,216          | 32-bit & 64-bit|
-//! | `World64`  | `Entity64`  | 281,474,976,710,656 | 64-bit only    |
+//! | World Type | Entity Type | Max Live Entities   | Platforms       |
+//! | ---------- | ----------- | ------------------- | --------------- |
+//! | `World16`  | `Entity16`  | 4,096               | All platforms   |
+//! | `World32`  | `Entity32`  | 16,777,216          | 32-bit & 64-bit |
+//! | `World64`  | `Entity64`  | 281,474,976,710,656 | 64-bit only     |
 //!
 //! ## Default World Type
 //!
@@ -34,6 +34,7 @@ use crate::component::{
 use crate::entity::{Entity, Entity16, Entity32, Entity64};
 use crate::entity_fields::EntityId;
 use crate::entity_map::EntityMap;
+use crate::query::{Fetch, Query, Queryable};
 
 /// Internal node in the component tree, managing component storage and subtree presence.
 ///
@@ -704,9 +705,37 @@ macro_rules! impl_world {
                 }
             }
 
+            /// Creates a new query for fetching component data from the world.
+            ///
+            /// This method provides a convenient interface for constructing a `Query`
+            /// to iterate over entities and their components of type `T` in the world.
+            ///
+            /// # Type Parameters
+            /// - `'w`: The lifetime of the world reference.
+            /// - `T`: The type of data to fetch (e.g., `&T` or `&mut T`).
+            ///
+            /// # Returns
+            /// A `Query` instance for fetching data of type `T` from the world.
+            ///
+            /// # Examples
+            /// ```ignore
+            /// let query = world.query::<&Position>();
+            /// for (entity, position) in query.iter() {
+            ///     println!("Entity: {:?}, Position: {:?}", entity, position);
+            /// }
+            /// ```
+            #[inline]
+            pub fn query<'w, T: Fetch<'w, Self>>(&'w mut self) -> Query<'w, Self, T> {
+                Query::<Self, T>::new(self)
+            }
+        }
+
+        impl Queryable for $t {
+            type Entt = $e;
+
             /// Returns the number of entities currently holding this component.
             #[inline]
-            pub fn len<T: Component>(&mut self) -> usize {
+            fn len<T: Component>(&mut self) -> usize {
                 let handle = unsafe { T::handle() };
                 self.raw.len(handle)
             }
@@ -724,7 +753,7 @@ macro_rules! impl_world {
             ///
             /// - The iteration order is not specified and should not be relied upon.
             #[inline]
-            pub fn iter<T: Component>(&mut self) -> impl Iterator<Item = ($e, &T)> {
+            fn iter<T: Component>(&mut self) -> impl Iterator<Item = (Self::Entt, &T)> {
                 let handle = unsafe { T::handle() };
                 self.raw.iter(handle).map(|(e, p)| {
                     let pv = p as *const T;
@@ -746,7 +775,7 @@ macro_rules! impl_world {
             ///
             /// - The iteration order is not specified and should not be relied upon.
             #[inline]
-            pub fn iter_mut<T: Component>(&mut self) -> impl Iterator<Item = ($e, &mut T)> {
+            fn iter_mut<T: Component>(&mut self) -> impl Iterator<Item = (Self::Entt, &mut T)> {
                 let handle = unsafe { T::handle() };
                 self.raw.iter_mut(handle).map(|(e, p)| {
                     let pv = p as *mut T;
@@ -893,5 +922,33 @@ mod world_tests {
         let result: HashSet<_> = world.iter::<Position>().map(|(e, p)| (e, *p)).collect();
 
         assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn test_query_single() {
+        RawWorld32::get_registry().write().unwrap().clear();
+        let mut world = World32::new();
+        unsafe {
+            World32::register::<Position>();
+        }
+
+        const POSITION_COUNT: usize = 1024;
+        let mut initial = HashSet::new();
+        for i in 0..POSITION_COUNT {
+            let entity = world.new_entity().unwrap();
+            let pos = Position(i as i32, i as i32);
+            world.bind_component(entity, pos);
+            initial.insert((entity, pos));
+        }
+        assert_eq!(world.len::<Position>(), POSITION_COUNT);
+
+        let query_results: HashSet<_> = world
+            .query::<&Position>()
+            .iter()
+            .map(|(e, v)| (e, *v))
+            .collect();
+
+        assert_eq!(query_results.len(), POSITION_COUNT);
+        assert_eq!(query_results, initial);
     }
 }
